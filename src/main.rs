@@ -115,6 +115,13 @@ async fn run(cli: Cli) -> Result<()> {
     if cli.export_jsonl {
         cfg.jsonl_export = true;
     }
+    // Global proxy manager: mirrors the Python `_proxy_manager` rotation.
+    proxy::set_global(proxy::ProxyManager::new(
+        &cfg.proxy,
+        &cfg.proxy_file,
+        cfg.proxy_per_attempt,
+    ));
+
     if let Some(url) = &cli.proxy_url {
         match proxy::ProxyManager::fetch_from_url(url).await {
             Ok(list) if !list.is_empty() => {
@@ -375,9 +382,13 @@ async fn run_loop(
 async fn run_parallel(options: &RegisterOptions, total: u64, _isolate: bool) -> Result<()> {
     let total = total.max(1);
     p_print(&format!("Creating {total} account(s) in parallel"), Color::Cyan);
+    let slots = proxy::distribute(total as usize);
     let mut handles = Vec::new();
-    for worker in 0..total {
-        let options = options.clone();
+    for (worker, slot) in slots.into_iter().enumerate() {
+        let mut options = options.clone();
+        if slot.is_some() {
+            options.proxy = slot;
+        }
         handles.push(tokio::spawn(async move {
             let result = register_with_retries(&options).await;
             let ok = result.is_ok();

@@ -93,9 +93,13 @@ impl Menu {
                 }
             }
         } else {
+            let slots = crate::proxy::distribute(parallel as usize);
             let mut handles = Vec::new();
-            for worker in 0..parallel {
-                let options = options.clone();
+            for (worker, slot) in slots.into_iter().enumerate() {
+                let mut options = options.clone();
+                if slot.is_some() {
+                    options.proxy = slot;
+                }
                 handles.push(tokio::spawn(async move {
                     for i in 0..total.div_ceil(parallel as u64) {
                         if i > 0 {

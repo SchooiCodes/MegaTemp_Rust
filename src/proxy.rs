@@ -1,6 +1,38 @@
 use crate::console::{p_print, Color};
 use anyhow::{bail, Result};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock, RwLock};
+
+static GLOBAL: OnceLock<RwLock<Option<Arc<ProxyManager>>>> = OnceLock::new();
+
+fn slot() -> &'static RwLock<Option<Arc<ProxyManager>>> {
+    GLOBAL.get_or_init(|| RwLock::new(None))
+}
+
+/// Install the process-wide proxy manager (the Python `_proxy_manager`).
+pub fn set_global(manager: ProxyManager) {
+    if manager.is_empty() {
+        return;
+    }
+    *slot().write().unwrap() = Some(Arc::new(manager));
+}
+
+/// Next proxy for a new browser launch, when no explicit proxy was given.
+pub fn current() -> Option<String> {
+    slot()
+        .read()
+        .unwrap()
+        .as_ref()
+        .and_then(|m| m.get_proxy())
+}
+
+/// One proxy per parallel worker (round-robin).
+pub fn distribute(workers: usize) -> Vec<Option<String>> {
+    match slot().read().unwrap().as_ref() {
+        Some(manager) => manager.distribute(workers),
+        None => vec![None; workers],
+    }
+}
 
 pub fn validate(proxy: &str) -> Result<()> {
     if proxy.is_empty() {
@@ -22,11 +54,11 @@ pub fn validate(proxy: &str) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ProxyManager {
     proxies: Vec<String>,
     per_attempt: bool,
-    index: AtomicUsize,
+    index: Arc<AtomicUsize>,
 }
 
 impl ProxyManager {
@@ -57,10 +89,20 @@ impl ProxyManager {
         } else if !proxy.is_empty() {
             proxies.push(proxy.to_string());
         }
+        proxies.retain(|p| match validate(p) {
+            Ok(()) => true,
+            Err(e) => {
+                p_print(
+                    &format!("Warning: ignoring proxy {p}: {e}"),
+                    Color::Warning,
+                );
+                false
+            }
+        });
         Self {
             proxies,
             per_attempt,
-            index: AtomicUsize::new(0),
+            index: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -144,16 +186,40 @@ mod tests {
         let pm = ProxyManager {
             proxies: vec!["a".into(), "b".into()],
             per_attempt: false,
-            index: AtomicUsize::new(0),
+            index: Arc::new(AtomicUsize::new(0)),
         };
         assert_eq!(pm.get_proxy().unwrap(), "a");
         assert_eq!(pm.get_proxy().unwrap(), "a");
         let pm = ProxyManager {
             proxies: vec!["a".into(), "b".into()],
             per_attempt: true,
-            index: AtomicUsize::new(0),
+            index: Arc::new(AtomicUsize::new(0)),
         };
         assert_eq!(pm.get_proxy().unwrap(), "a");
         assert_eq!(pm.get_proxy().unwrap(), "b");
+    }
+
+    #[test]
+    fn per_attempt_rotation_wraps_around() {
+        // Mirrors the Python smoke test: a, b, a.
+        let pm = ProxyManager {
+            proxies: vec!["http://a:1@1.2.3.4:80".into(), "http://b:2@5.6.7.8:8080".into()],
+            per_attempt: true,
+            index: Arc::new(AtomicUsize::new(0)),
+        };
+        assert_eq!(pm.get_proxy().unwrap(), "http://a:1@1.2.3.4:80");
+        assert_eq!(pm.get_proxy().unwrap(), "http://b:2@5.6.7.8:8080");
+        assert_eq!(pm.get_proxy().unwrap(), "http://a:1@1.2.3.4:80");
+    }
+
+    #[test]
+    fn distribute_fills_every_slot() {
+        let pm = ProxyManager::new("http://user:pass@1.2.3.4:8080", "", false);
+        let slots = pm.distribute(3);
+        assert_eq!(slots.len(), 3);
+        assert!(slots.iter().all(|s| s.as_deref() == Some("http://user:pass@1.2.3.4:8080")));
+
+        let empty = ProxyManager::default();
+        assert!(empty.distribute(2).iter().all(Option::is_none));
     }
 }

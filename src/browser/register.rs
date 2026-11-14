@@ -62,11 +62,13 @@ pub async fn register_one(options: &RegisterOptions) -> Result<RegisteredAccount
         random_alnum(8)
     );
     let profile_dir = crate::disk::profile_dir(&profile_name);
-    let mut browser = Browser::launch(
+    // Fall back to the rotating proxy manager when no proxy was passed in.
+    let launch_proxy = options.proxy.clone().or_else(crate::proxy::current);
+    let browser = Browser::launch(
         &options.browser,
         !options.visible,
         &profile_dir,
-        options.proxy.as_deref(),
+        launch_proxy.as_deref(),
     )
     .await
     .context("starting browser")?;
