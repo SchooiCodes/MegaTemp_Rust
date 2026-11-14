@@ -1,0 +1,133 @@
+use anyhow::{bail, Result};
+use std::path::Path;
+use std::time::Instant;
+
+use crate::console::{elapsed, p_print, Color};
+use crate::mega::{MegaClient, UploadResult};
+use crate::models::{Config, Credentials};
+
+pub async fn get_session(cfg: &Config, creds: &Credentials) -> Result<MegaClient> {
+    if creds.email.is_empty() || creds.password.is_empty() {
+        bail!("account is missing email or password");
+    }
+    let proxy = if cfg.proxy.is_empty() {
+        None
+    } else {
+        Some(cfg.proxy.as_str())
+    };
+    let mut last = None;
+    for _ in 0..3 {
+        let mut client = MegaClient::new(proxy)?;
+        match client.login(&creds.email, &creds.password).await {
+            Ok(()) => return Ok(client),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow::anyhow!("login failed")))
+}
+
+pub async fn upload_file(
+    cfg: &Config,
+    creds: &Credentials,
+    path: &Path,
+    public: bool,
+) -> Result<UploadResult> {
+    if !path.is_file() {
+        bail!("{} is not a file", path.display());
+    }
+    let client = get_session(cfg, creds).await?;
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    p_print(
+        &format!(
+            "Uploading {} ({:.2} MiB)",
+            path.display(),
+            size as f64 / 1_048_576.0
+        ),
+        Color::Cyan,
+    );
+    let start = Instant::now();
+    let mut last = None;
+    for attempt in 1..=2 {
+        match client.upload(path, None, None, public).await {
+            Ok(result) => {
+                p_print(
+                    &format!("Uploaded in {}", elapsed(start)),
+                    Color::Ok,
+                );
+                if let Some(url) = &result.public_url {
+                    p_print(url, Color::Blue);
+                }
+                return Ok(result);
+            }
+            Err(e) => {
+                last = Some(e);
+                if attempt < 2 {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                }
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow::anyhow!("upload failed")))
+}
+
+pub async fn upload_dir(
+    cfg: &Config,
+    creds: &Credentials,
+    dir: &Path,
+    public: bool,
+) -> Result<usize> {
+    if !dir.is_dir() {
+        bail!("{} is not a directory", dir.display());
+    }
+    let client = get_session(cfg, creds).await?;
+    let mut files = Vec::new();
+    collect_files(dir, &mut files);
+    for file in &files {
+        let relative = file.strip_prefix(dir).unwrap_or(file);
+        let target_folder = relative.parent().filter(|p| !p.as_os_str().is_empty());
+        let dest = if let Some(parent) = target_folder {
+            Some(
+                client
+                    .create_folder(&parent.to_string_lossy(), None)
+                    .await?
+                    .handle,
+            )
+        } else {
+            None
+        };
+        let name = file
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        match client
+            .upload(file, dest.as_deref(), Some(&name), public)
+            .await
+        {
+            Ok(result) => {
+                p_print(&format!("Uploaded {}", file.display()), Color::Ok);
+                if let Some(url) = result.public_url {
+                    p_print(&url, Color::Blue);
+                }
+            }
+            Err(e) => p_print(
+                &format!("Failed to upload {}: {e}", file.display()),
+                Color::Fail,
+            ),
+        }
+    }
+    Ok(files.len())
+}
+
+fn collect_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(&path, out);
+        } else if path.is_file() {
+            out.push(path);
+        }
+    }
+}

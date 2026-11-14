@@ -1,0 +1,49 @@
+[package]
+name = "megatem"
+version = "1.8.0"
+edition = "2021"
+description = "MegaTemp - bulk MEGA account creator and manager (Rust port)"
+license = "GPL-3.0-only"
+repository = "https://github.com/SchooiCodes/MegaTemp"
+
+[[bin]]
+name = "megatem"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "stream", "blocking"] }
+aes = "0.8"
+aes-gcm = "0.10"
+cbc = "0.1"
+ctr = "0.9"
+hmac = "0.12"
+sha2 = "0.10"
+pbkdf2 = "0.12"
+base64 = "0.22"
+rand = "0.8"
+regex = "1"
+csv = "1"
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
+fs2 = "0.4"
+dirs = "6"
+num-bigint = "0.4"
+num-integer = "0.1"
+num-traits = "0.2"
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+crossterm = "0.28"
+sysinfo = "0.33"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
