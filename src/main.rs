@@ -1,3 +1,11 @@
+//! MegaTemp — bulk MEGA account creator and manager.
+//!
+//! This is a Rust port of the Python MegaTemp tool. Some helpers keep the
+//! original module surface even when the CLI does not reach them yet, so the
+//! crate opts out of dead-code warnings.
+
+#![allow(dead_code)]
+
 mod browser;
 mod cli;
 mod config;
@@ -25,7 +33,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use browser::register::{register_with_retries, RegisterOptions};
 use cli::Cli;
-use models::Config;
 use console::{p_print, separator, Color};
 use models::Credentials;
 

@@ -3,7 +3,7 @@ use aes::Aes128;
 use anyhow::{bail, Result};
 use num_bigint::{BigInt, BigUint, Sign};
 use num_integer::{ExtendedGcd, Integer};
-use num_traits::{One, Zero};
+use num_traits::One;
 use sha2::{Digest, Sha256, Sha512};
 
 use crate::crypto::{a32_to_bytes, bytes_to_a32, mega_b64_decode, mega_b64_encode};

@@ -245,7 +245,7 @@ async fn run_registration(
     }
 
     // Best-effort: remove the default welcome file.
-    if let Ok(mut client) = login_client(&options.cfg, &mailbox.address, password).await {
+    if let Ok(client) = login_client(&options.cfg, &mailbox.address, password).await {
         let _ = client.delete_welcome_file().await;
     }
 

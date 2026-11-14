@@ -2,7 +2,7 @@ use anyhow::{bail, Result};
 use std::path::Path;
 
 use crate::console::{p_print, separator, Color};
-use crate::mega::{MegaClient, MegaNode};
+use crate::mega::MegaNode;
 use crate::models::{Config, Credentials};
 
 pub async fn list_files(cfg: &Config, creds: &Credentials) -> Result<Vec<MegaNode>> {
