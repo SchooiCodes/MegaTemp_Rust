@@ -183,6 +183,21 @@ mod tests {
     }
 
     #[test]
+    fn legacy_python_vectors() {
+        // Tokens produced by utilities/fs.py with the password "legacy-pass".
+        let obfuscated = "OBS:rJ6oRqVHG8+fEh0HBV7iYGBveQdUC+QkJM0q8VoL80LE68YywDUpz58SHQcFXuJgYG95B1QL5CQkzSrxWgvzQg==";
+        assert_eq!(decrypt_field(obfuscated, "legacy-pass").unwrap(), "hunter2");
+        assert!(decrypt_field(obfuscated, "wrong").is_err());
+
+        let fernet = "ENC:gAAAAAAAAAAAAAECAwQFBgcICQoLDA0ODwlinb_JVVe5VCXnb3qTECgnUQVenhIT6MqZ9qnmqWqW_NbAwpdIf7rWAkeFErdq7w==";
+        assert_eq!(decrypt_field(fernet, "legacy-pass").unwrap(), "hunter2");
+        assert!(decrypt_field(fernet, "wrong").is_err());
+
+        let gcm = "ENC2:AAECAwQFBgcICQoL5IcB+cQwfPEP3LEKccs2wfsuSGlC6r4=";
+        assert_eq!(decrypt_field(gcm, "legacy-pass").unwrap(), "hunter2");
+    }
+
+    #[test]
     fn mega_base64_roundtrip() {
         let data = vec![0u8, 1, 2, 250, 251, 252];
         let encoded = mega_b64_encode(&data);
