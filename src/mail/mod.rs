@@ -15,6 +15,26 @@ pub struct Mailbox {
     pub secret: String,
 }
 
+/// A provider refused us for rate limiting; retrying the same provider is pointless.
+#[derive(Debug)]
+pub struct RateLimited {
+    pub provider: &'static str,
+    pub detail: String,
+}
+
+impl std::fmt::Display for RateLimited {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} is rate limiting this IP: {}", self.provider, self.detail)
+    }
+}
+
+impl std::error::Error for RateLimited {}
+
+/// True when any error in the chain is a provider rate limit.
+pub fn is_rate_limited(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| cause.is::<RateLimited>())
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Message {
     pub mail_id: String,

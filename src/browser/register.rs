@@ -316,8 +316,19 @@ pub async fn register_with_retries(options: &RegisterOptions) -> Result<Register
             match register_one(&attempt_options).await {
                 Ok(account) => return Ok(account),
                 Err(e) => {
+                    let rate_limited = mail::is_rate_limited(&e);
                     p_print(&format!("Attempt failed: {e}"), Color::Warning);
                     last_error = Some(e);
+                    if rate_limited {
+                        p_print(
+                            &format!(
+                                "Skipping {provider_name} (rate limited); use --provider {} to pick a different one",
+                                mail::fallback_provider(&provider_name)
+                            ),
+                            Color::Warning,
+                        );
+                        break;
+                    }
                     let delay = (1.0 * 1.5f64.powi(attempt as i32 - 1)).min(3.0);
                     tokio::time::sleep(Duration::from_secs_f64(delay)).await;
                 }

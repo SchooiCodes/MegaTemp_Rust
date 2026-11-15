@@ -2,7 +2,7 @@ use anyhow::{anyhow, bail, Result};
 use serde_json::{json, Value};
 use std::time::Duration;
 
-use super::{generate_address_local, Mailbox, Message};
+use super::{generate_address_local, Mailbox, Message, RateLimited};
 use crate::util::random_alnum;
 
 const BASE: &str = "https://api.mail.tm";
@@ -30,7 +30,7 @@ impl MailTm {
         body: Option<Value>,
     ) -> Result<Value> {
         let mut last_error = None;
-        for attempt in 1..=10u32 {
+        for attempt in 1..=4u32 {
             let mut req = self
                 .http
                 .request(method.clone(), url)
@@ -44,12 +44,32 @@ impl MailTm {
             match req.send().await {
                 Ok(resp) => {
                     let status = resp.status();
+                    let retry_after = resp
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| v.parse::<u64>().ok());
                     let text = resp.text().await.unwrap_or_default();
                     if status.is_success() {
                         return Ok(serde_json::from_str(&text).unwrap_or(Value::Null));
                     }
-                    if status.as_u16() == 429 || status.is_server_error() {
-                        let delay = (2u64.pow(attempt - 1) + rand::random::<u64>() % 2).min(10);
+                    if status.as_u16() == 429 {
+                        // One short wait, then hand over to the next provider instead of
+                        // burning the whole attempt budget on a blocked IP.
+                        if attempt >= 2 {
+                            return Err(RateLimited {
+                                provider: "mail.tm",
+                                detail: text.chars().take(120).collect(),
+                            }
+                            .into());
+                        }
+                        let delay = retry_after.unwrap_or(2).min(5);
+                        tokio::time::sleep(Duration::from_secs(delay)).await;
+                        last_error = Some(anyhow!("mail.tm HTTP {status}: {text}"));
+                        continue;
+                    }
+                    if status.is_server_error() {
+                        let delay = (2u64.pow(attempt - 1) + rand::random::<u64>() % 2).min(8);
                         tokio::time::sleep(Duration::from_secs(delay)).await;
                         last_error = Some(anyhow!("mail.tm HTTP {status}: {text}"));
                         continue;
