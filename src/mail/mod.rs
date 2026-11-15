@@ -35,6 +35,33 @@ pub fn is_rate_limited(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| cause.is::<RateLimited>())
 }
 
+/// A provider delivered MEGA's verification mail without a readable body.
+///
+/// Guerrilla Mail stores MEGA's HTML-only message as `mail_body: "<pre></pre>"`,
+/// so the confirmation link can never be extracted; polling would just spin.
+#[derive(Debug)]
+pub struct UnusableMail {
+    pub provider: String,
+    pub detail: String,
+}
+
+impl std::fmt::Display for UnusableMail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} returned an unreadable verification email: {}",
+            self.provider, self.detail
+        )
+    }
+}
+
+impl std::error::Error for UnusableMail {}
+
+/// True when any error in the chain says the mailbox cannot render MEGA mail.
+pub fn is_unusable(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| cause.is::<UnusableMail>())
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Message {
     pub mail_id: String,
@@ -120,6 +147,13 @@ pub fn is_confirmation(message: &Message) -> bool {
     body.contains("mega.nz") || body.contains("mega.co.nz")
 }
 
+/// True when the message is plausibly MEGA's verification mail.
+pub fn looks_like_mega(message: &Message) -> bool {
+    let from = message.mail_from.to_lowercase();
+    let subject = message.mail_subject.to_lowercase();
+    from.contains("mega.io") || from.contains("mega.nz") || subject.contains("mega")
+}
+
 /// Poll a mailbox until a MEGA confirmation arrives or the timeout expires.
 pub async fn wait_for_message(
     provider: &MailProvider,
@@ -128,14 +162,32 @@ pub async fn wait_for_message(
 ) -> Result<Message> {
     let attempts = ((timeout_secs as f64 / 2.0).round() as u64).max(1);
     let mut skipped: Option<String> = None;
+    let started = std::time::Instant::now();
     for attempt in 1..=attempts {
         let base = (1.0 + 0.25 * (attempt.saturating_sub(1)) as f64).min(3.0);
         let jitter = rand::thread_rng().gen_range(0.8..1.2);
+        crate::console::status_line(&format!(
+            "waiting for the confirmation email ({}s/{}s)",
+            started.elapsed().as_secs(),
+            timeout_secs
+        ));
         tokio::time::sleep(Duration::from_secs_f64(base * jitter)).await;
         match provider.latest_message(mailbox).await {
             Ok(Some(message)) => {
                 if is_confirmation(&message) {
+                    crate::console::clear_status_line();
                     return Ok(message);
+                }
+                if looks_like_mega(&message) {
+                    crate::console::clear_status_line();
+                    return Err(UnusableMail {
+                        provider: mailbox.provider.clone(),
+                        detail: format!(
+                            "'{}' arrived with an empty body, so the confirmation link is missing",
+                            message.mail_subject
+                        ),
+                    }
+                    .into());
                 }
                 skipped = Some(message.mail_subject.clone());
             }
@@ -144,11 +196,13 @@ pub async fn wait_for_message(
                 let delay = 0.3 + (attempt % 5) as f64 * 0.25;
                 tokio::time::sleep(Duration::from_secs_f64(delay)).await;
                 if attempt == attempts {
+                    crate::console::clear_status_line();
                     return Err(e);
                 }
             }
         }
     }
+    crate::console::clear_status_line();
     match skipped {
         Some(subject) => bail!(
             "no MEGA confirmation email arrived within {timeout_secs}s (newest message: {subject})"
@@ -208,5 +262,15 @@ mod tests {
             "https://mega.nz/#confirmAbCdEf"
         )));
         assert!(!is_confirmation(&message("Newsletter", "nothing to see")));
+    }
+
+    #[test]
+    fn mega_mail_without_a_body_is_detected() {
+        let empty = message(
+            "MEGA email verification required",
+            "<pre></pre>",
+        );
+        assert!(looks_like_mega(&empty));
+        assert!(!is_confirmation(&empty));
     }
 }

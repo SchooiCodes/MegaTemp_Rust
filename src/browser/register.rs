@@ -49,6 +49,12 @@ pub fn resolve_browser(cfg: &Config, cli_path: Option<&str>) -> Option<PathBuf> 
 
 pub async fn register_one(options: &RegisterOptions) -> Result<RegisteredAccount> {
     let provider = MailProvider::from_name(&options.provider)?;
+    if provider.name() == "guerrillamail" {
+        p_print(
+            "Note: Guerrilla Mail stores MEGA's verification email without a body; prefer --provider mailtm",
+            Color::Warning,
+        );
+    }
     p_print(
         &format!("Using {} for the confirmation email", provider.name()),
         Color::Cyan,
@@ -317,12 +323,18 @@ pub async fn register_with_retries(options: &RegisterOptions) -> Result<Register
                 Ok(account) => return Ok(account),
                 Err(e) => {
                     let rate_limited = mail::is_rate_limited(&e);
+                    let unusable = mail::is_unusable(&e);
                     p_print(&format!("Attempt failed: {e:#}"), Color::Warning);
                     last_error = Some(e);
-                    if rate_limited {
+                    if rate_limited || unusable {
+                        let reason = if rate_limited {
+                            "rate limited"
+                        } else {
+                            "cannot render MEGA's verification email"
+                        };
                         p_print(
                             &format!(
-                                "Skipping {provider_name} (rate limited); use --provider {} to pick a different one",
+                                "Skipping {provider_name} ({reason}); use --provider {} to pick a different one",
                                 mail::fallback_provider(&provider_name)
                             ),
                             Color::Warning,
