@@ -1,7 +1,9 @@
 use anyhow::{anyhow, Result};
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{read, Event, KeyCode, KeyEventKind};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use crossterm::execute;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -437,32 +439,57 @@ fn open_url(url: &str) -> Result<()> {
     Ok(())
 }
 
-fn draw_menu(title: &str, items: &[&str], selected: usize) {
-    execute!(
-        std::io::stdout(),
-        Clear(ClearType::All),
-        MoveTo(0, 0)
-    )
-    .ok();
-    let width = 52usize;
+const MENU_WIDTH: usize = 52;
+
+fn render_menu(title: &str, items: &[&str], selected: usize) -> String {
+    let width = MENU_WIDTH;
+    let inner = width - 2;
     let unicode = crate::console::unicode_enabled();
     let (tl, tr, bl, br, h, v, l, r) = if unicode {
         ("╔", "╗", "╚", "╝", "═", "║", "╠", "╣")
     } else {
         ("+", "+", "+", "+", "=", "|", "+", "+")
     };
-    println!("{tl}{}{tr}", h.repeat(width - 2));
+
     let title_line = format!(" {title} ");
-    let pad = width.saturating_sub(title_line.chars().count() + 2);
-    println!("{v} {title_line}{}{v}", " ".repeat(pad));
-    println!("{l}{}{r}", h.repeat(width - 2));
+    let title_width = title_line.chars().count();
+    let left = inner.saturating_sub(title_width) / 2;
+    let right = inner.saturating_sub(title_width + left);
+
+    let mut frame = String::with_capacity(1024);
+    frame.push_str(&format!("{tl}{}{tr}\r\n", h.repeat(inner)));
+    frame.push_str(&format!(
+        "{v}{}{}{}{v}\r\n",
+        " ".repeat(left),
+        title_line,
+        " ".repeat(right)
+    ));
+    frame.push_str(&format!("{l}{}{r}\r\n", h.repeat(inner)));
     for (i, item) in items.iter().enumerate() {
-        let marker = if i == selected { ">" } else { " " };
-        println!("{v} {marker} {:<46} {v}", item);
+        let marker = if i == selected { '>' } else { ' ' };
+        let text = format!(" {marker} {item}");
+        let text: String = text.chars().take(inner).collect();
+        let padding = inner.saturating_sub(text.chars().count());
+        frame.push_str(&format!("{v}{text}{}{v}\r\n", " ".repeat(padding)));
     }
-    println!("{bl}{}{br}", h.repeat(width - 2));
-    println!("  Up/Down or j/k, Enter to select, q to exit");
-    let _ = std::io::stdout().flush();
+    frame.push_str(&format!("{bl}{}{br}\r\n", h.repeat(inner)));
+    frame.push_str(&format!(
+        "{:<width$}",
+        "  Up/Down or j/k, Enter to select, q to exit",
+        width = width
+    ));
+    frame
+}
+
+fn draw_menu(title: &str, items: &[&str], selected: usize) {
+    let frame = render_menu(title, items, selected);
+    // Every line is exactly `width` wide, so the frame can overwrite itself on
+    // the alternate screen without clearing first. Clearing on each keypress was
+    // what made the menu flash.
+    let mut stdout = std::io::stdout();
+    let _ = execute!(stdout, MoveTo(0, 0));
+    let _ = write!(stdout, "{frame}");
+    let _ = stdout.flush();
 }
 
 fn select(title: &str, items: &[&str]) -> Result<Option<usize>> {
@@ -481,7 +508,8 @@ fn select(title: &str, items: &[&str]) -> Result<Option<usize>> {
     }
 
     enable_raw_mode()?;
-    execute!(std::io::stdout(), Hide)?;
+    let mut stdout = std::io::stdout();
+    execute!(stdout, EnterAlternateScreen, Hide)?;
     let mut selected = 0usize;
     let result = loop {
         draw_menu(title, items, selected);
@@ -516,10 +544,41 @@ fn select(title: &str, items: &[&str]) -> Result<Option<usize>> {
             Err(e) => break Err(anyhow!("input error: {e}")),
         }
     };
-    execute!(std::io::stdout(), Show)?;
+    let _ = execute!(stdout, Show, LeaveAlternateScreen);
     disable_raw_mode()?;
     println!();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn menu_frames_have_equal_width_lines() {
+        let items = ["Create Accounts", "Credentials", "Account Management", "Exit"];
+        let frame = render_menu("MegaTemp", &items, 2);
+        let lines: Vec<&str> = frame.split("\r\n").collect();
+        assert_eq!(lines.len(), items.len() + 5);
+        for line in &lines {
+            assert_eq!(
+                line.chars().count(),
+                MENU_WIDTH,
+                "ragged line ({:?}): {line:?}",
+                line.chars().count()
+            );
+        }
+    }
+
+    #[test]
+    fn selected_row_is_marked_and_long_items_are_clipped() {
+        let long = "x".repeat(80);
+        let frame = render_menu("T", &[&long, "short"], 1);
+        for line in frame.split("\r\n") {
+            assert_eq!(line.chars().count(), MENU_WIDTH);
+        }
+        assert!(frame.contains(" > short"));
+    }
 }
 
 fn _now() -> f64 {
