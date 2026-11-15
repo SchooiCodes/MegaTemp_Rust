@@ -126,7 +126,19 @@ impl Guerrilla {
         let Some(list) = data.get("list").and_then(|v| v.as_array()) else {
             return Ok(None);
         };
-        let Some(first) = list.first() else {
+        // Guerrilla Mail injects its own welcome message into every mailbox.
+        let candidates: Vec<&Value> = list
+            .iter()
+            .filter(|item| {
+                let subject = item
+                    .get("mail_subject")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                !subject.contains("welcome to guerrilla")
+            })
+            .collect();
+        let Some(first) = candidates.first().copied() else {
             return Ok(None);
         };
         let id = first

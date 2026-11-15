@@ -40,7 +40,7 @@ use models::Credentials;
 async fn main() {
     let cli = Cli::parse_from(cli::normalize_args());
     if let Err(e) = run(cli).await {
-        p_print(&format!("Error: {e}"), Color::Fail);
+        p_print(&format!("Error: {e:#}"), Color::Fail);
         std::process::exit(1);
     }
 }

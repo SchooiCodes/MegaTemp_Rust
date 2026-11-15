@@ -317,7 +317,7 @@ pub async fn register_with_retries(options: &RegisterOptions) -> Result<Register
                 Ok(account) => return Ok(account),
                 Err(e) => {
                     let rate_limited = mail::is_rate_limited(&e);
-                    p_print(&format!("Attempt failed: {e}"), Color::Warning);
+                    p_print(&format!("Attempt failed: {e:#}"), Color::Warning);
                     last_error = Some(e);
                     if rate_limited {
                         p_print(

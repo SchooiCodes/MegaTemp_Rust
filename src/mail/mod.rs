@@ -106,19 +106,39 @@ pub fn generate_address_local() -> String {
     format!("mt{}", random_alnum(12))
 }
 
-/// Poll a mailbox until a message arrives or the timeout expires.
+/// A provider welcome mail is never the MEGA confirmation.
+///
+/// Guerrilla Mail drops a "Welcome to Guerrilla Mail" message into every new
+/// inbox, so treating the newest message as the confirmation aborts the flow
+/// before MEGA has even sent anything.
+pub fn is_confirmation(message: &Message) -> bool {
+    let subject = message.mail_subject.to_lowercase();
+    if subject.contains("welcome to guerrilla") {
+        return false;
+    }
+    let body = message.mail_body.to_lowercase();
+    body.contains("mega.nz") || body.contains("mega.co.nz")
+}
+
+/// Poll a mailbox until a MEGA confirmation arrives or the timeout expires.
 pub async fn wait_for_message(
     provider: &MailProvider,
     mailbox: &Mailbox,
     timeout_secs: u64,
 ) -> Result<Message> {
     let attempts = ((timeout_secs as f64 / 2.0).round() as u64).max(1);
+    let mut skipped: Option<String> = None;
     for attempt in 1..=attempts {
         let base = (1.0 + 0.25 * (attempt.saturating_sub(1)) as f64).min(3.0);
         let jitter = rand::thread_rng().gen_range(0.8..1.2);
         tokio::time::sleep(Duration::from_secs_f64(base * jitter)).await;
         match provider.latest_message(mailbox).await {
-            Ok(Some(message)) => return Ok(message),
+            Ok(Some(message)) => {
+                if is_confirmation(&message) {
+                    return Ok(message);
+                }
+                skipped = Some(message.mail_subject.clone());
+            }
             Ok(None) => continue,
             Err(e) => {
                 let delay = 0.3 + (attempt % 5) as f64 * 0.25;
@@ -129,7 +149,12 @@ pub async fn wait_for_message(
             }
         }
     }
-    bail!("no confirmation email arrived within {timeout_secs}s")
+    match skipped {
+        Some(subject) => bail!(
+            "no MEGA confirmation email arrived within {timeout_secs}s (newest message: {subject})"
+        ),
+        None => bail!("no confirmation email arrived within {timeout_secs}s"),
+    }
 }
 
 /// Retry helper shared by the HTTP providers.
@@ -154,4 +179,34 @@ where
         }
     }
     Err(last.unwrap_or_else(|| anyhow::anyhow!("request failed")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn message(subject: &str, body: &str) -> Message {
+        Message {
+            mail_subject: subject.to_string(),
+            mail_body: body.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn welcome_mail_is_not_a_confirmation() {
+        assert!(!is_confirmation(&message(
+            "Welcome to Guerrilla Mail",
+            "Thanks for using the service"
+        )));
+    }
+
+    #[test]
+    fn mega_link_counts_as_confirmation() {
+        assert!(is_confirmation(&message(
+            "Confirm your MEGA account",
+            "https://mega.nz/#confirmAbCdEf"
+        )));
+        assert!(!is_confirmation(&message("Newsletter", "nothing to see")));
+    }
 }
