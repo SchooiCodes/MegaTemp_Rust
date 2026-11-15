@@ -130,7 +130,9 @@ pub fn fallback_provider(name: &str) -> &'static str {
 }
 
 pub fn generate_address_local() -> String {
-    format!("mt{}", random_alnum(12))
+    // Lowercase: mail.tm lowercases the address it assigns, so matching its
+    // spelling avoids 401s when logging in with the address we generated.
+    format!("mt{}", random_alnum(12).to_lowercase())
 }
 
 /// A provider welcome mail is never the MEGA confirmation.
