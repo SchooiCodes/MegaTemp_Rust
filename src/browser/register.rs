@@ -49,7 +49,13 @@ pub fn resolve_browser(cfg: &Config, cli_path: Option<&str>) -> Option<PathBuf> 
 
 pub async fn register_one(options: &RegisterOptions) -> Result<RegisteredAccount> {
     let provider = MailProvider::from_name(&options.provider)?;
-    if provider.name() == "guerrillamail" {
+    // Warn once per process: repeating it on every retry of every worker drowned
+    // out the lines that actually matter.
+    static WARNED_GUERRILLA: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    if provider.name() == "guerrillamail"
+        && !WARNED_GUERRILLA.swap(true, std::sync::atomic::Ordering::Relaxed)
+    {
         p_print(
             "Note: Guerrilla Mail stores MEGA's verification email without a body; prefer --provider mailtm",
             Color::Warning,
@@ -60,7 +66,7 @@ pub async fn register_one(options: &RegisterOptions) -> Result<RegisteredAccount
         Color::Cyan,
     );
     let mailbox = provider.create().await.context("creating mailbox")?;
-    p_print(&format!("Email: {}", mailbox.address), Color::Blue);
+    p_print(&format!("Inbox: {}", mailbox.address), Color::Blue);
 
     let password = generate_password(20, 2, 3);
     let profile_name = format!(
@@ -90,10 +96,19 @@ pub async fn register_one(options: &RegisterOptions) -> Result<RegisteredAccount
                 last_login: now(),
                 ..Default::default()
             };
-            if let Err(e) = credentials::save_credentials(&creds, &options.cfg) {
-                p_print(&format!("Could not save credentials: {e}"), Color::Fail);
-            } else {
-                p_print(&format!("Saved credentials for {}", account.email), Color::Ok);
+            match credentials::save_credentials(&creds, &options.cfg) {
+                Ok(path) => {
+                    separator("Success", 60);
+                    p_print(&format!("  Account:   {}", account.email), Color::Ok);
+                    p_print(&format!("  Password:  {}", account.password), Color::Ok);
+                    p_print(&format!("  Saved to:  {}", path.display()), Color::Ok);
+                }
+                Err(e) => {
+                    separator("Created, but not saved", 60);
+                    p_print(&format!("  Account:   {}", account.email), Color::Ok);
+                    p_print(&format!("  Password:  {}", account.password), Color::Warning);
+                    p_print(&format!("  Could not save credentials: {e}"), Color::Fail);
+                }
             }
             if !options.cfg.webhook_url.is_empty() {
                 send_webhook(
@@ -150,7 +165,7 @@ async fn run_registration(
     page.type_into("#register-firstname", random_first_name()).await?;
     page.type_into("#register-email", &mailbox.address).await?;
     page.type_into("#register-password", password).await?;
-    p_print("Filled registration form", Color::Cyan);
+    p_print("Registration form submitted", Color::Cyan);
 
     page.click_if_exists(".privacy-check").await?;
     if !page
@@ -161,12 +176,12 @@ async fn run_registration(
     }
     page.click(".register-button").await?;
 
-    p_print("Waiting for the confirmation email...", Color::Cyan);
+    p_print("Waiting for MEGA's confirmation email", Color::Cyan);
     let message = mail::wait_for_message(provider, mailbox, options.cfg.mail_timeout)
         .await
         .context("waiting for confirmation email")?;
     p_print(
-        &format!("Received email: {}", message.mail_subject),
+        &format!("Verification email received ({})", message.mail_subject),
         Color::Green,
     );
 
@@ -258,8 +273,6 @@ async fn run_registration(
     confirm_page.close().await;
     page.close().await;
 
-    p_print(&format!("Account created: {}", mailbox.address), Color::Ok);
-    separator("Success", 60);
     Ok(RegisteredAccount {
         email: mailbox.address.clone(),
         password: password.to_string(),
@@ -312,10 +325,10 @@ pub async fn register_with_retries(options: &RegisterOptions) -> Result<Register
         for attempt in 1..=options.cfg.max_attempts.max(1) {
             p_print(
                 &format!(
-                    "Attempt {attempt}/{} with provider {provider_name}",
+                    "Attempt {attempt}/{} ({provider_name})",
                     options.cfg.max_attempts
                 ),
-                Color::Cyan,
+                Color::Header,
             );
             let mut attempt_options = options.clone();
             attempt_options.provider = provider_name.clone();

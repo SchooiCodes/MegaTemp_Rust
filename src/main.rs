@@ -353,15 +353,15 @@ async fn run_loop(
         if resume && i < state.completed + state.failed {
             continue;
         }
-        p_print(&format!("Registration {}/{total}", i + 1), Color::Cyan);
+        p_print(&format!("Registration {}/{total}", i + 1), Color::Header);
         match register_with_retries(options).await {
             Ok(account) => {
                 state.completed += 1;
-                p_print(&format!("Created {}", account.email), Color::Ok);
+                p_print(&format!("  Created {}", account.email), Color::Ok);
             }
             Err(e) => {
                 state.failed += 1;
-                p_print(&format!("Failed: {e}"), Color::Fail);
+                p_print(&format!("  Failed: {e:#}"), Color::Fail);
             }
         }
         if (state.completed + state.failed) % 5 == 0 || last_save.elapsed() > Duration::from_secs(30)
@@ -373,14 +373,23 @@ async fn run_loop(
     let _ = console::save_checkpoint(&state);
     let total_done = state.completed + state.failed;
     separator("Summary", 60);
-    println!(
-        "  Total: {total_done}  Success: {}  Failed: {}  Time: {}",
-        state.completed,
-        state.failed,
-        console::elapsed(started)
+    p_print(
+        &format!(
+            "  Total: {total_done}   Success: {}   Failed: {}   Time: {}",
+            state.completed,
+            state.failed,
+            console::elapsed(started)
+        ),
+        if state.failed == 0 { Color::Ok } else { Color::Warning },
     );
     if total_done > 0 {
-        println!("  Average: {:.1}s/account", started.elapsed().as_secs_f64() / total_done as f64);
+        p_print(
+            &format!(
+                "  Average: {:.1}s/account",
+                started.elapsed().as_secs_f64() / total_done as f64
+            ),
+            Color::None,
+        );
     }
     console::notify("MegaTemp", &format!("{} account(s) created", state.completed));
     Ok(())
@@ -388,7 +397,10 @@ async fn run_loop(
 
 async fn run_parallel(options: &RegisterOptions, total: u64, _isolate: bool) -> Result<()> {
     let total = total.max(1);
-    p_print(&format!("Creating {total} account(s) in parallel"), Color::Cyan);
+    p_print(
+        &format!("Creating {total} account(s) in parallel"),
+        Color::Cyan,
+    );
     let slots = proxy::distribute(total as usize);
     let mut handles = Vec::new();
     for (worker, slot) in slots.into_iter().enumerate() {
@@ -396,15 +408,16 @@ async fn run_parallel(options: &RegisterOptions, total: u64, _isolate: bool) -> 
         if slot.is_some() {
             options.proxy = slot;
         }
-        handles.push(tokio::spawn(async move {
+        let label = format!("w{}", worker + 1);
+        handles.push(tokio::spawn(console::labelled(label, async move {
             let result = register_with_retries(&options).await;
             let ok = result.is_ok();
             match result {
-                Ok(account) => println!("[w{}] created {}", worker + 1, account.email),
-                Err(e) => println!("[w{}] failed: {e}", worker + 1),
+                Ok(account) => p_print(&format!("Created {}", account.email), Color::Ok),
+                Err(e) => p_print(&format!("Failed: {e:#}"), Color::Fail),
             }
             ok
-        }));
+        })));
     }
     let mut ok = 0;
     let mut failed = 0;
@@ -416,7 +429,10 @@ async fn run_parallel(options: &RegisterOptions, total: u64, _isolate: bool) -> 
         }
     }
     separator("Summary", 60);
-    println!("  Total: {total}  Success: {ok}  Failed: {failed}");
+    p_print(
+        &format!("  Created {ok} of {total} ({failed} failed)"),
+        if failed == 0 { Color::Ok } else { Color::Warning },
+    );
     Ok(())
 }
 

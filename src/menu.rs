@@ -71,7 +71,10 @@ impl Menu {
             }
             _ => return Ok(()),
         };
-        self.register_batch(accounts, parallel).await
+        let result = self.register_batch(accounts, parallel).await;
+        // Keep the results on screen instead of snapping straight back to the menu.
+        let _ = prompt("Press Enter to return to the menu...");
+        result
     }
 
     async fn register_batch(&mut self, total: u64, parallel: u32) -> Result<()> {
@@ -87,14 +90,24 @@ impl Menu {
             browser: self.browser.clone(),
             keep_profile: false,
         };
+        let mut created = 0u64;
+        let mut failed = 0u64;
         if parallel <= 1 {
             for i in 1..=total {
-                println!("Registration {i}/{total}");
-                if let Err(e) = register_with_retries(&options).await {
-                    p_print(&format!("Registration failed: {e}"), Color::Fail);
+                separator(&format!("Registration {i}/{total}"), 60);
+                match register_with_retries(&options).await {
+                    Ok(_) => created += 1,
+                    Err(e) => {
+                        failed += 1;
+                        p_print(&format!("  Failed: {e:#}"), Color::Fail);
+                    }
                 }
             }
         } else {
+            p_print(
+                &format!("Creating {total} account(s) with {parallel} workers"),
+                Color::Cyan,
+            );
             let slots = crate::proxy::distribute(parallel as usize);
             let mut handles = Vec::new();
             for (worker, slot) in slots.into_iter().enumerate() {
@@ -102,22 +115,40 @@ impl Menu {
                 if slot.is_some() {
                     options.proxy = slot;
                 }
-                handles.push(tokio::spawn(async move {
+                let label = format!("w{}", worker + 1);
+                handles.push(tokio::spawn(crate::console::labelled(label, async move {
+                    let mut ok = 0u64;
+                    let mut bad = 0u64;
                     for i in 0..total.div_ceil(parallel as u64) {
                         if i > 0 {
                             tokio::time::sleep(Duration::from_secs(1)).await;
                         }
                         match register_with_retries(&options).await {
-                            Ok(a) => println!("[w{}] created {}", worker + 1, a.email),
-                            Err(e) => println!("[w{}] failed: {e}", worker + 1),
+                            Ok(_) => ok += 1,
+                            Err(e) => {
+                                bad += 1;
+                                p_print(&format!("Failed: {e:#}"), Color::Fail);
+                            }
                         }
                     }
-                }));
+                    (ok, bad)
+                })));
             }
             for handle in handles {
-                let _ = handle.await;
+                match handle.await {
+                    Ok((ok, bad)) => {
+                        created += ok;
+                        failed += bad;
+                    }
+                    Err(_) => failed += 1,
+                }
             }
         }
+        separator("Summary", 60);
+        p_print(
+            &format!("  Created {created} of {total} ({failed} failed)"),
+            if failed == 0 { Color::Ok } else { Color::Warning },
+        );
         Ok(())
     }
 
@@ -440,10 +471,20 @@ fn open_url(url: &str) -> Result<()> {
 }
 
 const MENU_WIDTH: usize = 52;
+/// Rows above the first item: top border, title, rule, spacer.
+const MENU_HEADER_ROWS: usize = 4;
 
-fn render_menu(title: &str, items: &[&str], selected: usize) -> String {
-    let width = MENU_WIDTH;
-    let inner = width - 2;
+/// One bordered row with `text` centred inside it.
+fn centered(text: &str, inner: usize, v: &str) -> String {
+    let text: String = text.chars().take(inner).collect();
+    let pad = inner.saturating_sub(text.chars().count());
+    let left = pad / 2;
+    let right = pad - left;
+    format!("{v}{}{text}{}{v}", " ".repeat(left), " ".repeat(right))
+}
+
+fn render_menu(title: &str, items: &[&str], selected: usize) -> Vec<String> {
+    let inner = MENU_WIDTH - 2;
     let unicode = crate::console::unicode_enabled();
     let (tl, tr, bl, br, h, v, l, r) = if unicode {
         ("╔", "╗", "╚", "╝", "═", "║", "╠", "╣")
@@ -451,41 +492,62 @@ fn render_menu(title: &str, items: &[&str], selected: usize) -> String {
         ("+", "+", "+", "+", "=", "|", "+", "+")
     };
 
-    let title_line = format!(" {title} ");
-    let title_width = title_line.chars().count();
-    let left = inner.saturating_sub(title_width) / 2;
-    let right = inner.saturating_sub(title_width + left);
-
-    let mut frame = String::with_capacity(1024);
-    frame.push_str(&format!("{tl}{}{tr}\r\n", h.repeat(inner)));
-    frame.push_str(&format!(
-        "{v}{}{}{}{v}\r\n",
-        " ".repeat(left),
-        title_line,
-        " ".repeat(right)
-    ));
-    frame.push_str(&format!("{l}{}{r}\r\n", h.repeat(inner)));
+    let mut lines = Vec::with_capacity(items.len() + 8);
+    lines.push(format!("{tl}{}{tr}", h.repeat(inner)));
+    lines.push(centered(&title.to_uppercase(), inner, v));
+    lines.push(format!("{l}{}{r}", h.repeat(inner)));
+    lines.push(format!("{v}{}{v}", " ".repeat(inner)));
     for (i, item) in items.iter().enumerate() {
         let marker = if i == selected { '>' } else { ' ' };
-        let text = format!(" {marker} {item}");
+        let text = format!(" {marker} {}. {item}", i + 1);
         let text: String = text.chars().take(inner).collect();
         let padding = inner.saturating_sub(text.chars().count());
-        frame.push_str(&format!("{v}{text}{}{v}\r\n", " ".repeat(padding)));
+        lines.push(format!("{v}{text}{}{v}", " ".repeat(padding)));
     }
-    frame.push_str(&format!("{bl}{}{br}\r\n", h.repeat(inner)));
-    frame.push_str(&format!(
-        "{:<width$}",
-        "  Up/Down or j/k, Enter to select, q to exit",
-        width = width
-    ));
-    frame
+    lines.push(format!("{v}{}{v}", " ".repeat(inner)));
+    lines.push(format!("{l}{}{r}", h.repeat(inner)));
+    let footer: String = "  Up/Down move   Enter select   1-9 jump   q quit"
+        .chars()
+        .take(inner)
+        .collect();
+    lines.push(format!("{v}{footer:<inner$}{v}"));
+    lines.push(format!("{bl}{}{br}", h.repeat(inner)));
+    lines
 }
 
 fn draw_menu(title: &str, items: &[&str], selected: usize) {
-    let frame = render_menu(title, items, selected);
-    // Every line is exactly `width` wide, so the frame can overwrite itself on
-    // the alternate screen without clearing first. Clearing on each keypress was
-    // what made the menu flash.
+    let lines = render_menu(title, items, selected);
+    let colour = crate::console::colors_enabled();
+    let last = lines.len().saturating_sub(1);
+    let mut frame = String::with_capacity(1024);
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 {
+            frame.push_str("\r\n");
+        }
+        let style = if !colour {
+            None
+        } else if i == MENU_HEADER_ROWS + selected {
+            // Reverse video turns the selected row into a full-width bar.
+            Some("\x1b[7m")
+        } else if i == 1 {
+            Some("\x1b[1;97m")
+        } else if i == 0 || i == 2 || i == last.saturating_sub(2) || i == last {
+            Some("\x1b[36m")
+        } else {
+            None
+        };
+        match style {
+            Some(style) => {
+                frame.push_str(style);
+                frame.push_str(line);
+                frame.push_str("\x1b[0m");
+            }
+            None => frame.push_str(line),
+        }
+    }
+    // Every line is exactly MENU_WIDTH wide, so the frame can overwrite itself
+    // on the alternate screen without clearing first. Clearing on each keypress
+    // was what made the menu flash.
     let mut stdout = std::io::stdout();
     let _ = execute!(stdout, MoveTo(0, 0));
     let _ = write!(stdout, "{frame}");
@@ -558,13 +620,12 @@ mod tests {
     fn menu_frames_have_equal_width_lines() {
         let items = ["Create Accounts", "Credentials", "Account Management", "Exit"];
         let frame = render_menu("MegaTemp", &items, 2);
-        let lines: Vec<&str> = frame.split("\r\n").collect();
-        assert_eq!(lines.len(), items.len() + 5);
-        for line in &lines {
+        assert_eq!(frame.len(), items.len() + 8);
+        for line in &frame {
             assert_eq!(
                 line.chars().count(),
                 MENU_WIDTH,
-                "ragged line ({:?}): {line:?}",
+                "ragged line ({}): {line:?}",
                 line.chars().count()
             );
         }
@@ -574,10 +635,26 @@ mod tests {
     fn selected_row_is_marked_and_long_items_are_clipped() {
         let long = "x".repeat(80);
         let frame = render_menu("T", &[&long, "short"], 1);
-        for line in frame.split("\r\n") {
+        for line in &frame {
             assert_eq!(line.chars().count(), MENU_WIDTH);
         }
-        assert!(frame.contains(" > short"));
+        assert!(frame.iter().any(|line| line.contains(" > 2. short")));
+        assert!(frame.iter().any(|line| line.contains("xxxxxxxx")));
+    }
+
+    #[test]
+    fn title_is_centred_inside_the_border() {
+        let frame = render_menu("MegaTemp", &["One"], 0);
+        let title = &frame[1];
+        let left = title.chars().skip(1).take_while(|c| *c == ' ').count();
+        let right = title
+            .chars()
+            .rev()
+            .skip(1)
+            .take_while(|c| *c == ' ')
+            .count();
+        assert!(left.abs_diff(right) <= 1, "title off-centre: {title:?}");
+        assert!(title.contains("MEGATEMP"));
     }
 }
 
