@@ -29,6 +29,10 @@ pub struct Cli {
     #[arg(long)]
     pub isolate: bool,
 
+    /// Internal: create this many accounts sequentially (used by --isolate workers)
+    #[arg(long, hide = true)]
+    pub internal_batch: Option<u64>,
+
     /// Keep Chromium profiles after registration
     #[arg(long)]
     pub keep_profiles: bool,

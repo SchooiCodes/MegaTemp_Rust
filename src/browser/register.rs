@@ -48,6 +48,7 @@ pub fn resolve_browser(cfg: &Config, cli_path: Option<&str>) -> Option<PathBuf> 
 }
 
 pub async fn register_one(options: &RegisterOptions) -> Result<RegisteredAccount> {
+    let started = std::time::Instant::now();
     let provider = MailProvider::from_name(&options.provider)?;
     // Warn once per process: repeating it on every retry of every worker drowned
     // out the lines that actually matter.
@@ -99,14 +100,22 @@ pub async fn register_one(options: &RegisterOptions) -> Result<RegisteredAccount
             match credentials::save_credentials(&creds, &options.cfg) {
                 Ok(path) => {
                     separator("Success", 60);
-                    p_print(&format!("  Account:   {}", account.email), Color::Ok);
-                    p_print(&format!("  Password:  {}", account.password), Color::Ok);
-                    p_print(&format!("  Saved to:  {}", path.display()), Color::Ok);
+                    p_print(&format!("  Account:      {}", account.email), Color::Ok);
+                    p_print(&format!("  Password:     {}", account.password), Color::Ok);
+                    p_print(
+                        &format!("  Verified in:  {}", crate::console::elapsed(started)),
+                        Color::Cyan,
+                    );
+                    p_print(&format!("  Saved to:     {}", path.display()), Color::Ok);
                 }
                 Err(e) => {
                     separator("Created, but not saved", 60);
-                    p_print(&format!("  Account:   {}", account.email), Color::Ok);
-                    p_print(&format!("  Password:  {}", account.password), Color::Warning);
+                    p_print(&format!("  Account:      {}", account.email), Color::Ok);
+                    p_print(&format!("  Password:     {}", account.password), Color::Warning);
+                    p_print(
+                        &format!("  Verified in:  {}", crate::console::elapsed(started)),
+                        Color::Cyan,
+                    );
                     p_print(&format!("  Could not save credentials: {e}"), Color::Fail);
                 }
             }

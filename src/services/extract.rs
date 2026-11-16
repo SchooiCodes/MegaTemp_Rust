@@ -30,11 +30,13 @@ pub fn extract_credentials(cfg: &Config, format: &str) -> Result<PathBuf> {
     }
     std::fs::write(&path, lines.join("\n") + if lines.is_empty() { "" } else { "\n" })?;
     let absolute = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+    let shown = absolute.display().to_string();
+    let shown = shown.strip_prefix(r"\\?\").unwrap_or(&shown);
     p_print(
         &format!(
             "Extracted {} account(s) to {}",
             lines.len(),
-            absolute.display()
+            shown
         ),
         Color::Ok,
     );

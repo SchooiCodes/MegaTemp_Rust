@@ -64,7 +64,13 @@ async fn login_with_retries(
         match client.login(&creds.email, &creds.password).await {
             Ok(()) => return Ok(client),
             Err(e) => {
+                // A rejected password or removed account will never succeed on
+                // retry, so stop burning attempts (and time) on it.
+                let terminal = auth_failure(&e);
                 last = Some(e);
+                if terminal {
+                    break;
+                }
                 let jitter = rand::random::<f64>() * 0.5 * attempt as f64;
                 tokio::time::sleep(Duration::from_secs_f64(jitter)).await;
             }
@@ -81,6 +87,7 @@ pub async fn check_all(
     yes: bool,
     announce: bool,
 ) -> Result<(Vec<AliveResult>, KeepaliveSummary)> {
+    let started = std::time::Instant::now();
     let accounts = credentials::load_all(&cfg.encryption_password);
     if accounts.is_empty() {
         p_print("No saved accounts found.", Color::Warning);
@@ -143,11 +150,27 @@ pub async fn check_all(
 
     let summary = summary.lock().await.clone();
     if announce {
-        separator("Summary", 60);
-        println!(
-            "  Total: {}  Alive: {}  Dead: {}  Errors: {}  Pruned: {}",
-            summary.total, summary.alive, summary.dead, summary.errors, summary.pruned
+        separator("Keepalive summary", 60);
+        p_print(
+            &format!(
+                "  {} accounts in {}",
+                summary.total,
+                crate::console::elapsed(started)
+            ),
+            Color::Cyan,
         );
+        p_print(&format!("  Total:  {}", summary.total), Color::Blue);
+        p_print(&format!("  Alive:  {}", summary.alive), Color::Ok);
+        p_print(
+            &format!("  Dead:   {}", summary.dead),
+            if summary.dead == 0 { Color::Ok } else { Color::Warning },
+        );
+        if summary.errors > 0 {
+            p_print(&format!("  Errors: {}", summary.errors), Color::Warning);
+        }
+        if summary.pruned > 0 {
+            p_print(&format!("  Pruned: {}", summary.pruned), Color::Cyan);
+        }
     }
     Ok((results, summary))
 }

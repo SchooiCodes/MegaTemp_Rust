@@ -29,6 +29,8 @@ use anyhow::{bail, Result};
 use clap::Parser;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use browser::register::{register_with_retries, RegisterOptions};
@@ -53,6 +55,7 @@ async fn run(cli: Cli) -> Result<()> {
 
     if cli.clean {
         disk::clean_all();
+        disk::usage_report();
         return Ok(());
     }
     if cli.disk_usage {
@@ -66,6 +69,7 @@ async fn run(cli: Cli) -> Result<()> {
     console::set_quiet(cli.quiet);
     console::set_json(cli.json);
     console::set_notify(cli.notify);
+    spawn_interrupt_handler();
 
     if let Some(provider) = &cli.provider {
         if !mail::valid_providers().contains(&provider.to_lowercase().as_str()) {
@@ -158,6 +162,7 @@ async fn run(cli: Cli) -> Result<()> {
                         "tags": r.tags,
                         "status": r.status,
                         "quota_gb": r.quota_gb,
+                        "error": r.error,
                     })
                 })
                 .collect();
@@ -182,6 +187,9 @@ async fn run(cli: Cli) -> Result<()> {
                         .unwrap_or_else(|| "-".to_string()),
                     r.tags
                 );
+                if let Some(err) = &r.error {
+                    p_print(&format!("      {err}"), Color::Warning);
+                }
             }
         }
         return Ok(());
@@ -286,13 +294,40 @@ async fn run(cli: Cli) -> Result<()> {
         keep_profile: cli.keep_profiles,
     };
 
+    if let Some(count) = cli.internal_batch {
+        run_internal_batch(&options, count).await;
+        return Ok(());
+    }
+
     if let Some(total) = cli.loop_count {
-        run_loop(&options, total, cli.resume, cli.interval).await?;
+        if cli.parallel > 1 {
+            run_parallel(
+                &options,
+                total,
+                cli.parallel as usize,
+                cli.resume,
+                cli.isolate,
+                &browser,
+                &cli,
+            )
+            .await?;
+        } else {
+            run_loop(&options, total, cli.resume, cli.interval).await?;
+        }
         return Ok(());
     }
 
     if cli.parallel > 1 {
-        run_parallel(&options, cli.parallel as u64, cli.isolate).await?;
+        run_parallel(
+            &options,
+            cli.parallel as u64,
+            cli.parallel as usize,
+            false,
+            cli.isolate,
+            &browser,
+            &cli,
+        )
+        .await?;
         return Ok(());
     }
 
@@ -301,6 +336,7 @@ async fn run(cli: Cli) -> Result<()> {
         || cli.visible
         || cli.attempts != 4
         || cli.export_csv
+        || cli.export_jsonl
         || cli.verbose;
 
     if single {
@@ -364,6 +400,16 @@ async fn run_loop(
                 p_print(&format!("  Failed: {e:#}"), Color::Fail);
             }
         }
+        let done = state.completed + state.failed;
+        p_print(
+            &format!(
+                "[{done}/{total}] ok={} failed={} ({})",
+                state.completed,
+                state.failed,
+                console::elapsed(started)
+            ),
+            Color::Blue,
+        );
         if (state.completed + state.failed) % 5 == 0 || last_save.elapsed() > Duration::from_secs(30)
         {
             let _ = console::save_checkpoint(&state);
@@ -371,69 +417,285 @@ async fn run_loop(
         }
     }
     let _ = console::save_checkpoint(&state);
-    let total_done = state.completed + state.failed;
-    separator("Summary", 60);
+    let elapsed = console::elapsed(started);
+    separator("Loop summary", 60);
+    p_print(&format!("  Total accounts: {total}"), Color::Blue);
+    p_print(&format!("  Successful:     {}", state.completed), Color::Ok);
     p_print(
-        &format!(
-            "  Total: {total_done}   Success: {}   Failed: {}   Time: {}",
-            state.completed,
-            state.failed,
-            console::elapsed(started)
-        ),
+        &format!("  Failed:         {}", state.failed),
         if state.failed == 0 { Color::Ok } else { Color::Warning },
     );
-    if total_done > 0 {
+    p_print(&format!("  Total time:     {elapsed}"), Color::Cyan);
+    if state.completed > 0 {
         p_print(
             &format!(
-                "  Average: {:.1}s/account",
-                started.elapsed().as_secs_f64() / total_done as f64
+                "  Avg / success:  {:.1}s",
+                started.elapsed().as_secs_f64() / state.completed as f64
             ),
-            Color::None,
+            Color::Cyan,
         );
     }
-    console::notify("MegaTemp", &format!("{} account(s) created", state.completed));
+    p_print("Done.", Color::Ok);
+    console::notify(
+        "MegaTemp: Loop complete",
+        &format!("{} OK / {} FAIL in {elapsed}", state.completed, state.failed),
+    );
     Ok(())
 }
 
-async fn run_parallel(options: &RegisterOptions, total: u64, _isolate: bool) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+async fn run_parallel(
+    options: &RegisterOptions,
+    total: u64,
+    workers: usize,
+    resume: bool,
+    isolate: bool,
+    browser: &Path,
+    cli: &Cli,
+) -> Result<()> {
     let total = total.max(1);
+    let workers = workers.max(1).min(total as usize);
+    let started = Instant::now();
+    let skip = if resume {
+        console::load_checkpoint()
+            .map(|state| state.completed + state.failed)
+            .unwrap_or(0)
+            .min(total)
+    } else {
+        0
+    };
+    let remaining = total - skip;
+    if remaining == 0 {
+        p_print("Nothing left to do from the checkpoint", Color::Warning);
+        return Ok(());
+    }
     p_print(
-        &format!("Creating {total} account(s) in parallel"),
+        &format!("Creating {remaining} account(s) with {workers} worker(s)"),
         Color::Cyan,
     );
-    let slots = proxy::distribute(total as usize);
-    let mut handles = Vec::new();
-    for (worker, slot) in slots.into_iter().enumerate() {
-        let mut options = options.clone();
-        if slot.is_some() {
-            options.proxy = slot;
-        }
-        let label = format!("w{}", worker + 1);
-        handles.push(tokio::spawn(console::labelled(label, async move {
-            let result = register_with_retries(&options).await;
-            let ok = result.is_ok();
-            match result {
-                Ok(account) => p_print(&format!("Created {}", account.email), Color::Ok),
-                Err(e) => p_print(&format!("Failed: {e:#}"), Color::Fail),
-            }
-            ok
-        })));
+
+    let (ok, failed) = if isolate {
+        run_isolated_workers(remaining, workers, browser, cli).await?
+    } else {
+        run_shared_workers(options, remaining, workers, skip, total, started).await
+    };
+
+    let elapsed = console::elapsed(started);
+    separator("Parallel summary", 60);
+    p_print(&format!("  Total accounts: {total}"), Color::Blue);
+    if skip > 0 {
+        p_print(&format!("  Resumed at:     {skip}"), Color::Cyan);
     }
-    let mut ok = 0;
-    let mut failed = 0;
-    for handle in handles {
-        match handle.await {
-            Ok(true) => ok += 1,
-            Ok(false) => failed += 1,
-            Err(_) => failed += 1,
-        }
-    }
-    separator("Summary", 60);
+    p_print(&format!("  Successful:     {ok}"), Color::Ok);
     p_print(
-        &format!("  Created {ok} of {total} ({failed} failed)"),
-        if failed == 0 { Color::Ok } else { Color::Warning },
+        &format!("  Failed:         {failed}"),
+        if failed == 0 {
+            Color::Ok
+        } else {
+            Color::Warning
+        },
+    );
+    p_print(&format!("  Total time:     {elapsed}"), Color::Cyan);
+    if ok > 0 {
+        p_print(
+            &format!(
+                "  Avg / success:  {:.1}s",
+                started.elapsed().as_secs_f64() / ok as f64
+            ),
+            Color::Cyan,
+        );
+    }
+    p_print("Done.", Color::Ok);
+    console::notify(
+        "MegaTemp: Parallel complete",
+        &format!("{ok} OK / {failed} FAIL in {elapsed}"),
     );
     Ok(())
+}
+
+/// In-process workers that claim account slots from one shared counter.
+async fn run_shared_workers(
+    options: &RegisterOptions,
+    remaining: u64,
+    workers: usize,
+    skip: u64,
+    total: u64,
+    started: Instant,
+) -> (u64, u64) {
+    let next = Arc::new(AtomicU64::new(0));
+    let ok_counter = Arc::new(AtomicU64::new(0));
+    let fail_counter = Arc::new(AtomicU64::new(0));
+    let mut tasks = tokio::task::JoinSet::new();
+
+    for (worker, slot) in proxy::distribute(workers).into_iter().enumerate() {
+        let mut worker_options = options.clone();
+        if slot.is_some() {
+            worker_options.proxy = slot;
+        }
+        let next = next.clone();
+        let ok_counter = ok_counter.clone();
+        let fail_counter = fail_counter.clone();
+        let label = format!("w{}", worker + 1);
+        tasks.spawn(console::labelled(label, async move {
+            loop {
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                if index >= remaining {
+                    break;
+                }
+                match register_with_retries(&worker_options).await {
+                    Ok(account) => {
+                        ok_counter.fetch_add(1, Ordering::Relaxed);
+                        p_print(&format!("Created {}", account.email), Color::Ok);
+                    }
+                    Err(e) => {
+                        fail_counter.fetch_add(1, Ordering::Relaxed);
+                        p_print(&format!("Failed: {e:#}"), Color::Fail);
+                    }
+                }
+                let ok = ok_counter.load(Ordering::Relaxed);
+                let failed = fail_counter.load(Ordering::Relaxed);
+                p_print(
+                    &format!(
+                        "[{}/{total}] ok={ok} failed={failed} ({})",
+                        skip + ok + failed,
+                        console::elapsed(started)
+                    ),
+                    Color::Blue,
+                );
+            }
+        }));
+    }
+
+    while tasks.join_next().await.is_some() {}
+    (
+        ok_counter.load(Ordering::Relaxed),
+        fail_counter.load(Ordering::Relaxed),
+    )
+}
+
+/// One child process per worker. Each child registers its batch sequentially
+/// and exits with the number of failures, so the parent can report totals.
+async fn run_isolated_workers(
+    remaining: u64,
+    workers: usize,
+    browser: &Path,
+    cli: &Cli,
+) -> Result<(u64, u64)> {
+    let exe = std::env::current_exe()?;
+    let per_worker = remaining.div_ceil(workers as u64);
+    let mut slots = proxy::distribute(workers).into_iter();
+    let mut tasks = tokio::task::JoinSet::new();
+    let mut assigned = 0u64;
+
+    while assigned < remaining {
+        let batch = per_worker.min(remaining - assigned);
+        let slot = slots.next().flatten();
+        let mut command = tokio::process::Command::new(&exe);
+        command
+            .arg("--internal-batch")
+            .arg(batch.to_string())
+            .arg("--attempts")
+            .arg(cli.attempts.to_string())
+            .arg("--browser")
+            .arg(browser);
+        if let Some(provider) = &cli.provider {
+            command.arg("--provider").arg(provider);
+        }
+        if let Some(profile) = &cli.profile {
+            command.arg("--profile").arg(profile);
+        }
+        if let Some(timeout) = cli.mail_timeout {
+            command.arg("--mail-timeout").arg(timeout.to_string());
+        }
+        if let Some(password) = &cli.encryption_password {
+            command.arg("--encryption-password").arg(password);
+        }
+        if let Some(proxy) = slot {
+            command.arg("--proxy").arg(proxy);
+        }
+        for (enabled, flag) in [
+            (cli.visible, "--visible"),
+            (cli.quiet, "--quiet"),
+            (cli.keep_profiles, "--keep-profiles"),
+            (cli.export_csv, "--export-csv"),
+            (cli.export_jsonl, "--export-jsonl"),
+            (cli.verbose, "--verbose"),
+        ] {
+            if enabled {
+                command.arg(flag);
+            }
+        }
+        command.stdin(std::process::Stdio::null());
+
+        match command.spawn() {
+            Ok(mut child) => {
+                tasks.spawn(async move {
+                    let failed = match child.wait().await {
+                        Ok(status) => status
+                            .code()
+                            .map(|code| (code.max(0) as u64).min(batch))
+                            .unwrap_or(batch),
+                        Err(_) => batch,
+                    };
+                    (batch - failed, failed)
+                });
+            }
+            Err(e) => {
+                p_print(&format!("Failed to start worker: {e}"), Color::Fail);
+                tasks.spawn(async move { (0u64, batch) });
+            }
+        }
+        assigned += batch;
+    }
+
+    let mut ok = 0u64;
+    let mut failed = 0u64;
+    while let Some(joined) = tasks.join_next().await {
+        if let Ok((worker_ok, worker_failed)) = joined {
+            ok += worker_ok;
+            failed += worker_failed;
+        }
+        p_print(
+            &format!("[{}/{remaining}] ok={ok} failed={failed}", ok + failed),
+            Color::Blue,
+        );
+    }
+    Ok((ok, failed))
+}
+
+/// Child-process body for `--isolate`. Registers `count` accounts and exits
+/// with the failure count so the parent process can total the run.
+async fn run_internal_batch(options: &RegisterOptions, count: u64) {
+    let mut failed = 0u64;
+    for _ in 0..count {
+        match register_with_retries(options).await {
+            Ok(account) => p_print(&format!("Created {}", account.email), Color::Ok),
+            Err(e) => {
+                failed += 1;
+                p_print(&format!("Failed: {e:#}"), Color::Fail);
+            }
+        }
+    }
+    std::process::exit(failed.min(255) as i32);
+}
+
+/// Print the final totals even when the process is interrupted (Ctrl+C).
+fn spawn_interrupt_handler() {
+    tokio::spawn(async {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            use std::io::Write;
+            let mut out = std::io::stdout();
+            let _ = crossterm::execute!(
+                out,
+                crossterm::cursor::Show,
+                crossterm::terminal::LeaveAlternateScreen
+            );
+            let _ = crossterm::terminal::disable_raw_mode();
+            let _ = writeln!(out);
+            p_print("Interrupted. Exiting...", Color::Warning);
+            std::process::exit(130);
+        }
+    });
 }
 
 fn now() -> f64 {

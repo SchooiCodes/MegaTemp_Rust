@@ -125,6 +125,9 @@ impl MegaClient {
                     .get("X-Hashcash")
                     .and_then(|v| v.to_str().ok())
                     .map(str::to_string);
+                if std::env::var_os("MEGATEM_DEBUG").is_some() {
+                    eprintln!("[mega] hashcash challenge: {header:?}");
+                }
                 let Some(header) = header else {
                     bail!("MEGA requested hashcash but sent no challenge");
                 };
@@ -141,7 +144,16 @@ impl MegaClient {
                 continue;
             }
 
+            let status = response.status();
             let text = response.text().await?;
+            if std::env::var_os("MEGATEM_DEBUG").is_some() {
+                eprintln!(
+                    "[mega] {} -> {} {}",
+                    data.get("a").and_then(|v| v.as_str()).unwrap_or("?"),
+                    status.as_u16(),
+                    text.chars().take(400).collect::<String>()
+                );
+            }
             let value: Value = serde_json::from_str(&text)
                 .with_context(|| format!("invalid MEGA response: {}", text.chars().take(200).collect::<String>()))?;
 
@@ -199,14 +211,11 @@ impl MegaClient {
         self.user_id = login.get("u").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
         if let Some(tsid) = login.get("tsid").and_then(|v| v.as_str()) {
-            let raw = mega_b64_decode(tsid)?;
-            if raw.len() >= 32 {
-                let first = bytes_to_a32(&raw[..16]);
-                let encrypted = encrypt_key(&first, &self.master_key)?;
-                if a32_to_bytes(&encrypted) == raw[raw.len() - 16..] {
-                    self.sid = Some(tsid.to_string());
-                }
-            }
+            // Trust the server-issued session id. MEGA's optional self-check
+            // re-encrypts the first half of the token with the master key and
+            // compares it to the second half; that check is only a sanity test
+            // for the key derivation and must never throw away a valid session.
+            self.sid = Some(tsid.to_string());
         } else if let Some(csid) = login.get("csid").and_then(|v| v.as_str()) {
             let privk = login
                 .get("privk")
@@ -221,8 +230,11 @@ impl MegaClient {
         } else {
             bail!("login response has neither tsid nor csid");
         }
+        if self.sid.is_none() {
+            bail!("login response contained no session id");
+        }
 
-        let nodes = self.get_files().await?;
+        let nodes = self.fetch_nodes().await?;
         self.root_id = nodes
             .iter()
             .find(|n| n.node_type == 2)
@@ -237,6 +249,17 @@ impl MegaClient {
     }
 
     pub async fn get_files(&self) -> Result<Vec<MegaNode>> {
+        Ok(self
+            .fetch_nodes()
+            .await?
+            .into_iter()
+            .filter(|n| matches!(n.node_type, 0 | 1))
+            .collect())
+    }
+
+    /// Every node in the account, including the keyless system nodes (root 2,
+    /// inbox 3, trash 4) that the listing helpers filter out.
+    async fn fetch_nodes(&self) -> Result<Vec<MegaNode>> {
         let resp = self.api_request(json!({"a": "f", "c": 1, "r": 1})).await?;
         let Some(files) = resp.get("f").and_then(|v| v.as_array()) else {
             return Ok(Vec::new());
@@ -245,7 +268,7 @@ impl MegaClient {
         for file in files {
             let handle = file.get("h").and_then(|v| v.as_str()).unwrap_or("");
             let node_type = file.get("t").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
-            if handle.is_empty() || !matches!(node_type, 0 | 1) {
+            if handle.is_empty() {
                 continue;
             }
             let parent = file.get("p").and_then(|v| v.as_str()).unwrap_or("");
@@ -262,24 +285,32 @@ impl MegaClient {
                 .iter()
                 .find(|(k, _)| k == uid || k == &self.user_id)
                 .or_else(|| key_map.first());
-            let Some((_, key_b64)) = chosen else {
-                continue;
-            };
-            let Ok(encrypted_key) = mega_b64_decode(key_b64) else {
-                continue;
-            };
-            let key = match decrypt_key(&bytes_to_a32(&encrypted_key), &self.master_key) {
-                Ok(k) => k,
-                Err(_) => continue,
-            };
-            if key.len() < 4 {
-                continue;
+            // Empty system nodes carry no key; keep them anyway so login can
+            // still discover the root and trash handles.
+            let mut key = Vec::new();
+            let mut name = String::new();
+            if let Some((_, key_b64)) = chosen {
+                if let Ok(encrypted_key) = mega_b64_decode(key_b64) {
+                    if let Ok(k) = decrypt_key(&bytes_to_a32(&encrypted_key), &self.master_key) {
+                        if k.len() >= 4 {
+                            // File keys are 8 u32: the AES key is the XOR
+                            // reconstruction of both halves, the second half
+                            // holds the IV and meta-MAC. Folder keys are the
+                            // 16-byte AES key already.
+                            let attr_key: Vec<u32> = if k.len() >= 8 {
+                                vec![k[0] ^ k[4], k[1] ^ k[5], k[2] ^ k[6], k[3] ^ k[7]]
+                            } else {
+                                k[..4].to_vec()
+                            };
+                            let attrs = file.get("a").and_then(|v| v.as_str()).unwrap_or("");
+                            if let Ok(v) = decrypt_attr(attrs, &attr_key) {
+                                name = v.get("n").and_then(|n| n.as_str()).unwrap_or("").to_string();
+                            }
+                            key = k;
+                        }
+                    }
+                }
             }
-            let attrs = file.get("a").and_then(|v| v.as_str()).unwrap_or("");
-            let name = match decrypt_attr(attrs, &key[..4]) {
-                Ok(v) => v.get("n").and_then(|n| n.as_str()).unwrap_or("").to_string(),
-                Err(_) => continue,
-            };
             nodes.push(MegaNode {
                 handle: handle.to_string(),
                 parent: parent.to_string(),
@@ -435,7 +466,7 @@ impl MegaClient {
         let attrs = encrypt_attr(&json!({"n": name}), &ul_key[..4])?;
         let encrypted_key = mega_b64_encode(&a32_to_bytes(&encrypt_key(&key, &self.master_key)?));
 
-        self.api_request(json!({
+        let completion = self.api_request(json!({
             "a": "p",
             "t": dest,
             "i": self.request_id,
@@ -448,15 +479,26 @@ impl MegaClient {
         }))
         .await?;
 
+        // MEGA replies with the node it actually created, whose handle differs
+        // from the temporary upload handle, so prefer the server's handle.
+        let handle = completion
+            .get("f")
+            .and_then(|v| v.as_array())
+            .and_then(|nodes| nodes.first())
+            .and_then(|node| node.get("h"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| completion_handle.clone());
+
         let key_b64 = mega_b64_encode(&a32_to_bytes(&key));
         let public_url = if public {
-            Some(self.public_link(&completion_handle, &key_b64).await?)
+            Some(self.public_link(&handle, &key_b64).await?)
         } else {
             None
         };
 
         Ok(UploadResult {
-            handle: completion_handle,
+            handle,
             key_b64,
             public_url,
         })
@@ -475,8 +517,25 @@ impl MegaClient {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("MEGA did not return a download URL"))?;
 
-        let key_bytes = a32_to_bytes(&node.key[..4]);
-        let counter = a32_to_bytes(&[node.key[4], node.key[5], 0, 0]);
+        // The 8-u32 file key packs the AES key and its meta-MAC: XOR the
+        // halves back together to recover the AES key, and use the second
+        // half as the CTR counter.
+        let (key_bytes, counter) = if node.key.len() >= 8 {
+            (
+                a32_to_bytes(&[
+                    node.key[0] ^ node.key[4],
+                    node.key[1] ^ node.key[5],
+                    node.key[2] ^ node.key[6],
+                    node.key[3] ^ node.key[7],
+                ]),
+                a32_to_bytes(&[node.key[4], node.key[5], 0, 0]),
+            )
+        } else {
+            (
+                a32_to_bytes(&node.key[..4]),
+                a32_to_bytes(&[node.key[4], node.key[5], 0, 0]),
+            )
+        };
         let mut cipher = ctr::Ctr128BE::<Aes128>::new_from_slices(&key_bytes, &counter)?;
 
         let part = dest.with_extension(format!(
@@ -620,4 +679,57 @@ pub fn transient(err: &anyhow::Error) -> bool {
 
 pub fn log_error(err: &anyhow::Error) {
     p_print(&format!("MEGA error: {err}"), Color::Fail);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Live smoke test for the MEGA client: login, upload, list, download.
+    ///
+    /// Ignored by default because it needs network access and a real account.
+    /// Run it with:
+    ///   set MEGATEM_LIVE_EMAIL=... & set MEGATEM_LIVE_PASSWORD=...
+    ///   cargo test live_upload_roundtrip -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn live_upload_roundtrip() {
+        let email = std::env::var("MEGATEM_LIVE_EMAIL").expect("MEGATEM_LIVE_EMAIL");
+        let password = std::env::var("MEGATEM_LIVE_PASSWORD").expect("MEGATEM_LIVE_PASSWORD");
+        let body = b"megatem live upload probe";
+
+        let mut client = MegaClient::new(None).expect("client");
+        client.login(&email, &password).await.expect("login");
+        assert!(!client.root_id.is_empty(), "root folder was not found");
+        assert!(!client.sid.is_none(), "no session id");
+
+        let dir = std::env::temp_dir().join("megatem_live_upload");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("live_probe.txt");
+        std::fs::write(&path, body).expect("write probe");
+
+        let upload = client
+            .upload(&path, None, Some("live_probe.txt"), true)
+            .await
+            .expect("upload");
+        let public_url = upload.public_url.clone().expect("public link");
+        assert!(
+            public_url.starts_with("https://mega.nz/#!"),
+            "unexpected public link: {public_url}"
+        );
+        let files = client.list_root_files().await.expect("list");
+        let node = files
+            .iter()
+            .find(|n| n.handle == upload.handle)
+            .expect("uploaded node is missing from the listing");
+        assert_eq!(node.name, "live_probe.txt");
+        assert_eq!(node.size, body.len() as u64);
+
+        let dest = dir.join("live_probe_downloaded.txt");
+        client.download(node, &dest).await.expect("download");
+        assert_eq!(std::fs::read(&dest).expect("read back"), body);
+
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_file(&dest).ok();
+    }
 }

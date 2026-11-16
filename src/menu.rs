@@ -78,6 +78,7 @@ impl Menu {
     }
 
     async fn register_batch(&mut self, total: u64, parallel: u32) -> Result<()> {
+        let started = std::time::Instant::now();
         let options = RegisterOptions {
             cfg: self.cfg.clone(),
             provider: self.cfg.email_provider.clone(),
@@ -144,10 +145,15 @@ impl Menu {
                 }
             }
         }
-        separator("Summary", 60);
+        separator("Batch summary", 60);
+        p_print(&format!("  Total accounts: {total}"), Color::Blue);
         p_print(
             &format!("  Created {created} of {total} ({failed} failed)"),
             if failed == 0 { Color::Ok } else { Color::Warning },
+        );
+        p_print(
+            &format!("  Total time:     {}", crate::console::elapsed(started)),
+            Color::Cyan,
         );
         Ok(())
     }
@@ -280,7 +286,7 @@ impl Menu {
             0 => {
                 crate::services::alive::check_all(
                     &self.cfg,
-                    self.cfg.max_attempts as usize,
+                    0,
                     false,
                     true,
                     true,

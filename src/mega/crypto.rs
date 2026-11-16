@@ -1,5 +1,6 @@
-use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
-use aes::Aes128;
+use aes::cipher::generic_array::GenericArray;
+use aes::cipher::{consts::U16, BlockDecrypt, BlockEncrypt, BlockSizeUser, KeyInit};
+use aes::{Aes128, Aes192, Aes256};
 use anyhow::{bail, Result};
 use num_bigint::{BigInt, BigUint, Sign};
 use num_integer::{ExtendedGcd, Integer};
@@ -8,24 +9,61 @@ use sha2::{Digest, Sha256, Sha512};
 
 use crate::crypto::{a32_to_bytes, bytes_to_a32, mega_b64_decode, mega_b64_encode};
 
-pub fn aes_cbc_encrypt(data: &[u8], key: &[u32]) -> Result<Vec<u8>> {
-    if data.len() % 16 != 0 {
-        bail!("aes_cbc_encrypt length must be a multiple of 16");
-    }
-    let key_bytes = a32_to_bytes(key);
-    let cipher = Aes128::new_from_slice(&key_bytes).map_err(|e| anyhow::anyhow!("bad key: {e}"))?;
-    let zero = [0u8; 16];
-    let mut out = data.to_vec();
-    let mut prev = zero;
+/// CBC with an all-zero IV, matching MEGA's key/attribute crypto.
+///
+/// MEGA uses AES-128 for 16-byte keys (password keys, node attributes) and
+/// AES-256 for 32-byte keys (master and node keys), so the variant has to
+/// follow the key length instead of always being AES-128.
+fn encrypt_blocks<C>(key_bytes: &[u8], out: &mut [u8]) -> Result<()>
+where
+    C: BlockEncrypt + KeyInit + BlockSizeUser<BlockSize = U16>,
+{
+    let cipher = C::new_from_slice(key_bytes).map_err(|e| anyhow::anyhow!("bad key: {e}"))?;
+    let mut prev = [0u8; 16];
     for block in out.chunks_exact_mut(16) {
         for (b, p) in block.iter_mut().zip(prev.iter()) {
             *b ^= p;
         }
         let mut arr = [0u8; 16];
         arr.copy_from_slice(block);
-        cipher.encrypt_block((&mut arr).into());
+        cipher.encrypt_block(GenericArray::from_mut_slice(&mut arr));
         block.copy_from_slice(&arr);
         prev = arr;
+    }
+    Ok(())
+}
+
+fn decrypt_blocks<C>(key_bytes: &[u8], out: &mut [u8]) -> Result<()>
+where
+    C: BlockDecrypt + KeyInit + BlockSizeUser<BlockSize = U16>,
+{
+    let cipher = C::new_from_slice(key_bytes).map_err(|e| anyhow::anyhow!("bad key: {e}"))?;
+    let mut prev = [0u8; 16];
+    for block in out.chunks_exact_mut(16) {
+        let mut arr = [0u8; 16];
+        arr.copy_from_slice(block);
+        let cipher_block = arr;
+        cipher.decrypt_block(GenericArray::from_mut_slice(&mut arr));
+        for (b, p) in arr.iter_mut().zip(prev.iter()) {
+            *b ^= p;
+        }
+        block.copy_from_slice(&arr);
+        prev = cipher_block;
+    }
+    Ok(())
+}
+
+pub fn aes_cbc_encrypt(data: &[u8], key: &[u32]) -> Result<Vec<u8>> {
+    if data.len() % 16 != 0 {
+        bail!("aes_cbc_encrypt length must be a multiple of 16");
+    }
+    let key_bytes = a32_to_bytes(key);
+    let mut out = data.to_vec();
+    match key_bytes.len() {
+        16 => encrypt_blocks::<Aes128>(&key_bytes, &mut out)?,
+        24 => encrypt_blocks::<Aes192>(&key_bytes, &mut out)?,
+        32 => encrypt_blocks::<Aes256>(&key_bytes, &mut out)?,
+        n => bail!("unsupported AES key length {n}"),
     }
     Ok(out)
 }
@@ -35,19 +73,12 @@ pub fn aes_cbc_decrypt(data: &[u8], key: &[u32]) -> Result<Vec<u8>> {
         bail!("aes_cbc_decrypt length must be a multiple of 16");
     }
     let key_bytes = a32_to_bytes(key);
-    let cipher = Aes128::new_from_slice(&key_bytes).map_err(|e| anyhow::anyhow!("bad key: {e}"))?;
     let mut out = data.to_vec();
-    let mut prev = [0u8; 16];
-    for block in out.chunks_exact_mut(16) {
-        let mut arr = [0u8; 16];
-        arr.copy_from_slice(block);
-        let cipher_block = arr;
-        cipher.decrypt_block((&mut arr).into());
-        for (b, p) in arr.iter_mut().zip(prev.iter()) {
-            *b ^= p;
-        }
-        block.copy_from_slice(&arr);
-        prev = cipher_block;
+    match key_bytes.len() {
+        16 => decrypt_blocks::<Aes128>(&key_bytes, &mut out)?,
+        24 => decrypt_blocks::<Aes192>(&key_bytes, &mut out)?,
+        32 => decrypt_blocks::<Aes256>(&key_bytes, &mut out)?,
+        n => bail!("unsupported AES key length {n}"),
     }
     Ok(out)
 }
@@ -228,7 +259,12 @@ pub fn rsa_raw_decrypt(c: &BigUint, d: &BigUint, n: &BigUint) -> Vec<u8> {
 pub fn decrypt_csid(csid: &str, parts: &[BigUint]) -> Result<String> {
     let (n, _e, d) = rsa_private_components(parts)?;
     let raw = mega_b64_decode(csid)?;
-    let c = BigUint::from_bytes_be(&raw);
+    // The challenge is an MPI: a 2-byte big-endian bit length followed by the
+    // integer itself, exactly like the components of the private key blob.
+    if raw.len() < 2 {
+        bail!("csid challenge is truncated");
+    }
+    let c = BigUint::from_bytes_be(&raw[2..]);
     let mut plain = rsa_raw_decrypt(&c, &d, &n);
     if plain.len() > 43 {
         plain.truncate(43);
@@ -268,6 +304,16 @@ mod tests {
         let data = vec![1u32, 2, 3, 4, 5, 6, 7, 8];
         let enc = encrypt_key(&data, &key).unwrap();
         assert_eq!(decrypt_key(&enc, &key).unwrap(), data);
+    }
+
+    #[test]
+    fn aes256_roundtrip() {
+        // Node keys are 32 bytes, which must select AES-256 rather than AES-128.
+        let key: Vec<u32> = (0..8u32).map(|i| 0x0102_0304 + i).collect();
+        let data: Vec<u8> = (0..64u8).collect();
+        let enc = aes_cbc_encrypt(&data, &key).unwrap();
+        assert_ne!(enc, data);
+        assert_eq!(aes_cbc_decrypt(&enc, &key).unwrap(), data);
     }
 
     #[test]
