@@ -1,10 +1,27 @@
 use anyhow::{bail, Result};
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::console::{elapsed, p_print, Color};
 use crate::mega::{MegaClient, UploadResult};
 use crate::models::{Config, Credentials};
+
+/// Show `Uploading name... (Ns elapsed)` on the live status line while the
+/// upload runs, mirroring Python's `_upload_with_progress`.
+fn spawn_upload_progress(name: String) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let started = Instant::now();
+        let mut ticker = tokio::time::interval(Duration::from_millis(500));
+        loop {
+            ticker.tick().await;
+            crate::console::status_line(&format!(
+                "Uploading {}... ({}s elapsed)",
+                name,
+                started.elapsed().as_secs()
+            ));
+        }
+    })
+}
 
 pub async fn get_session(cfg: &Config, creds: &Credentials) -> Result<MegaClient> {
     if creds.email.is_empty() || creds.password.is_empty() {
@@ -46,9 +63,17 @@ pub async fn upload_file(
         Color::Cyan,
     );
     let start = Instant::now();
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.display().to_string());
     let mut last = None;
     for attempt in 1..=2 {
-        match client.upload(path, None, None, public).await {
+        let progress = spawn_upload_progress(name.clone());
+        let outcome = client.upload(path, None, None, public).await;
+        progress.abort();
+        crate::console::clear_status_line();
+        match outcome {
             Ok(result) => {
                 p_print(
                     &format!("Uploaded in {}", elapsed(start)),
@@ -62,7 +87,7 @@ pub async fn upload_file(
             Err(e) => {
                 last = Some(e);
                 if attempt < 2 {
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    tokio::time::sleep(Duration::from_secs(2)).await;
                 }
             }
         }
@@ -99,10 +124,13 @@ pub async fn upload_dir(
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        match client
+        let progress = spawn_upload_progress(name.clone());
+        let outcome = client
             .upload(file, dest.as_deref(), Some(&name), public)
-            .await
-        {
+            .await;
+        progress.abort();
+        crate::console::clear_status_line();
+        match outcome {
             Ok(result) => {
                 p_print(&format!("Uploaded {}", file.display()), Color::Ok);
                 if let Some(url) = result.public_url {

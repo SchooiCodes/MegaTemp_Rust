@@ -68,6 +68,15 @@ pub async fn register_one(options: &RegisterOptions) -> Result<RegisteredAccount
     );
     let mailbox = provider.create().await.context("creating mailbox")?;
     p_print(&format!("Inbox: {}", mailbox.address), Color::Blue);
+    crate::console::v_print(
+        &format!(
+            "[mail] {} inbox {} secret set={}",
+            provider.name(),
+            mailbox.address,
+            !mailbox.secret.is_empty()
+        ),
+        Color::Cyan,
+    );
 
     let password = generate_password(20, 2, 3);
     let profile_name = format!(
@@ -364,6 +373,10 @@ pub async fn register_with_retries(options: &RegisterOptions) -> Result<Register
                         break;
                     }
                     let delay = (1.0 * 1.5f64.powi(attempt as i32 - 1)).min(3.0);
+                    crate::console::v_print(
+                        &format!("[retry] {provider_name} again in {delay:.1}s"),
+                        Color::Cyan,
+                    );
                     tokio::time::sleep(Duration::from_secs_f64(delay)).await;
                 }
             }

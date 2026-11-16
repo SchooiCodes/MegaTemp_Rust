@@ -173,6 +173,14 @@ pub async fn wait_for_message(
             started.elapsed().as_secs(),
             timeout_secs
         ));
+        crate::console::v_print(
+            &format!(
+                "[mail] poll {attempt}/{attempts} for {} ({}s elapsed)",
+                mailbox.address,
+                started.elapsed().as_secs()
+            ),
+            crate::console::Color::Cyan,
+        );
         tokio::time::sleep(Duration::from_secs_f64(base * jitter)).await;
         match provider.latest_message(mailbox).await {
             Ok(Some(message)) => {

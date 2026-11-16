@@ -15,6 +15,9 @@ use crate::models::{Config, Credentials};
 pub struct AliveResult {
     pub email: String,
     pub age_days: f64,
+    /// Days since the last successful login, for the human dashboard only.
+    #[serde(skip_serializing)]
+    pub last_login_days: Option<f64>,
     pub tags: String,
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -88,7 +91,7 @@ pub async fn check_all(
     announce: bool,
 ) -> Result<(Vec<AliveResult>, KeepaliveSummary)> {
     let started = std::time::Instant::now();
-    let accounts = credentials::load_all(&cfg.encryption_password);
+    let accounts = credentials::load_all(&cfg.encryption_password, &cfg.account_format);
     if accounts.is_empty() {
         p_print("No saved accounts found.", Color::Warning);
         return Ok((Vec::new(), KeepaliveSummary::default()));
@@ -177,14 +180,23 @@ pub async fn check_all(
 
 async fn check_one(cfg: &Config, account: &LoadedCredential, prune: bool, _yes: bool) -> AliveResult {
     let creds = &account.creds;
-    let age_days = if creds.last_login > 0.0 {
-        ((now_secs() - creds.last_login) / 86400.0 * 10.0).round() / 10.0
+    let now = now_secs();
+    // Python's health dashboard ages an account by its credential file mtime,
+    // and reports last login separately; keep both.
+    let age_days = if account.mtime > 0.0 {
+        ((now - account.mtime) / 86400.0).max(0.0).round()
     } else {
         0.0
+    };
+    let last_login_days = if creds.last_login > 0.0 {
+        Some((now - creds.last_login).max(0.0) / 86400.0)
+    } else {
+        None
     };
     let mut base = AliveResult {
         email: creds.email.clone(),
         age_days,
+        last_login_days,
         tags: creds.tags.clone(),
         status: "error".to_string(),
         quota_gb: None,
@@ -206,7 +218,9 @@ async fn check_one(cfg: &Config, account: &LoadedCredential, prune: bool, _yes: 
         Ok(client) => match client.quota().await {
             Ok((_used, total)) => {
                 base.status = "alive".to_string();
-                base.quota_gb = Some(((total as f64 / 1_073_741_824.0) * 100.0).round() / 100.0);
+                let quota = ((total as f64 / 1_073_741_824.0) * 100.0).round() / 100.0;
+                base.quota_gb = Some(quota);
+                crate::console::v_print(&format!("    {quota:.2} GB left"), Color::Ok);
                 let _ = credentials::touch_last_login(&creds.email, cfg, now_secs());
             }
             Err(e) => {

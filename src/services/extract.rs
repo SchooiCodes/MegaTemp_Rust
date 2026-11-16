@@ -6,7 +6,8 @@ use crate::credentials;
 use crate::models::Config;
 
 pub fn extract_credentials(cfg: &Config, format: &str) -> Result<PathBuf> {
-    let accounts = credentials::load_all(&cfg.encryption_password);
+    p_print("Extracting credentials to credentials.txt ...", Color::Header);
+    let accounts = credentials::load_all(&cfg.encryption_password, &cfg.account_format);
     let format = if format.is_empty() {
         "{email}#{password}"
     } else {
@@ -44,7 +45,7 @@ pub fn extract_credentials(cfg: &Config, format: &str) -> Result<PathBuf> {
 }
 
 fn writable_accounts(cfg: &Config) -> Vec<credentials::LoadedCredential> {
-    credentials::load_all(&cfg.encryption_password)
+    credentials::load_all(&cfg.encryption_password, &cfg.account_format)
         .into_iter()
         .filter(|a| !a.decrypt_failed)
         .collect()

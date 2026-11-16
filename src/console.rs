@@ -13,6 +13,7 @@ pub const RELEASES_URL: &str = "https://api.github.com/repos/SchooiCodes/MegaTem
 static QUIET: AtomicBool = AtomicBool::new(false);
 static JSON_MODE: AtomicBool = AtomicBool::new(false);
 static NOTIFY: AtomicBool = AtomicBool::new(false);
+static VERBOSE: AtomicBool = AtomicBool::new(false);
 static STATUS_LAST: AtomicI64 = AtomicI64::new(0);
 /// Serialise every write so a colour escape and its text are never split by
 /// another worker, and a live status line is always erased before a new line.
@@ -156,6 +157,18 @@ pub fn set_notify(v: bool) {
 }
 pub fn notify_enabled() -> bool {
     NOTIFY.load(Ordering::Relaxed)
+}
+pub fn set_verbose(v: bool) {
+    VERBOSE.store(v, Ordering::Relaxed);
+}
+pub fn verbose() -> bool {
+    VERBOSE.load(Ordering::Relaxed)
+}
+/// Print only when `--verbose` is on.
+pub fn v_print(text: &str, colour: Color) {
+    if verbose() {
+        p_print(text, colour);
+    }
 }
 
 /// Print human output. In JSON mode it goes to stderr, keeping stdout clean.

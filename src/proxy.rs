@@ -17,6 +17,16 @@ pub fn set_global(manager: ProxyManager) {
     *slot().write().unwrap() = Some(Arc::new(manager));
 }
 
+/// True when a global proxy manager with at least one usable proxy is installed.
+pub fn is_active() -> bool {
+    slot()
+        .read()
+        .unwrap()
+        .as_ref()
+        .map(|m| !m.is_empty())
+        .unwrap_or(false)
+}
+
 /// Next proxy for a new browser launch, when no explicit proxy was given.
 pub fn current() -> Option<String> {
     slot()
@@ -108,6 +118,27 @@ impl ProxyManager {
 
     pub fn is_empty(&self) -> bool {
         self.proxies.is_empty()
+    }
+
+    /// Build a manager from an already-fetched proxy list (used by --proxy-url).
+    pub fn from_list(proxies: Vec<String>, per_attempt: bool) -> Self {
+        let proxies: Vec<String> = proxies
+            .into_iter()
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .filter(|p| match validate(p) {
+                Ok(()) => true,
+                Err(e) => {
+                    p_print(&format!("Warning: ignoring proxy {p}: {e}"), Color::Warning);
+                    false
+                }
+            })
+            .collect();
+        Self {
+            proxies,
+            per_attempt,
+            index: Arc::new(AtomicUsize::new(0)),
+        }
     }
 
     pub fn get_proxy(&self) -> Option<String> {

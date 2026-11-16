@@ -114,8 +114,10 @@ pub fn load_file(path: &Path, password: &str) -> Result<LoadedCredential> {
     })
 }
 
-/// Load every JSON account, newest first.
-pub fn load_all(password: &str) -> Vec<LoadedCredential> {
+/// Load every saved account: newest JSON file first, then any entries that
+/// exist only in `accounts.txt` (the flat store used when `accountFormat` is
+/// set), skipping emails already represented by a JSON file.
+pub fn load_all(password: &str, account_format: &str) -> Vec<LoadedCredential> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir()) else {
         return out;
@@ -134,6 +136,15 @@ pub fn load_all(password: &str) -> Vec<LoadedCredential> {
         }
     }
     out.sort_by(|a, b| b.mtime.partial_cmp(&a.mtime).unwrap_or(std::cmp::Ordering::Equal));
+    let mut seen: std::collections::HashSet<String> = out
+        .iter()
+        .map(|item| item.creds.email.to_lowercase())
+        .collect();
+    for item in accounts_txt_entries(account_format, password) {
+        if seen.insert(item.creds.email.to_lowercase()) {
+            out.push(item);
+        }
+    }
     out
 }
 

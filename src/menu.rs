@@ -16,6 +16,7 @@ use crate::models::{Config, Credentials};
 use crate::password;
 use crate::services;
 use crate::util::{prompt, prompt_yes_no};
+use crate::util as util_mod;
 
 pub struct Menu {
     pub cfg: Config,
@@ -191,81 +192,139 @@ impl Menu {
     }
 
     fn view_accounts(&mut self) -> Result<()> {
-        let mut accounts = credentials::load_all(&self.cfg.encryption_password);
+        let mut accounts =
+            credentials::load_all(&self.cfg.encryption_password, &self.cfg.account_format);
         if accounts.is_empty() {
             println!("No saved accounts.");
             return Ok(());
         }
-        for (i, account) in accounts.iter().enumerate() {
-            let masked = mask(&account.creds.password);
-            println!(
-                "{:>3}. {}  {}  {}",
-                i + 1,
-                account.creds.email,
-                masked,
-                if account.decrypt_failed { "(locked)" } else { "" }
-            );
-        }
-        let choice = prompt("Account number (blank to go back): ");
-        let Ok(index) = choice.parse::<usize>() else {
-            return Ok(());
-        };
-        if index == 0 || index > accounts.len() {
-            return Ok(());
-        }
-        let mut account = accounts.remove(index - 1);
+        let mut filter = String::new();
         loop {
-            separator(&account.creds.email, 60);
-            println!("Email:          {}", account.creds.email);
-            println!("Email password: {}", mask(&account.creds.email_password));
-            println!("MEGA password:  {}", mask(&account.creds.password));
-            let (bits, label, _) = password::strength(&account.creds.password);
-            println!("Strength:       {label} ({bits:.1} bits)");
-            println!("Tags:           {}", account.creds.tags);
-            println!("Notes:          {}", account.creds.notes);
-            println!(
-                "Last login:     {}",
-                if account.creds.last_login > 0.0 {
-                    chrono::DateTime::from_timestamp(account.creds.last_login as i64, 0)
-                        .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
-                        .unwrap_or_else(|| "-".to_string())
-                } else {
-                    "-".to_string()
-                }
-            );
-            let action = prompt("[r]eveal  [n]otes  [t]ags  [d]elete  [b]ack: ");
-            match action.trim().to_lowercase().as_str() {
-                "r" => {
-                    println!("MEGA password:  {}", account.creds.password);
-                }
-                "n" => {
-                    account.creds.notes = prompt("Notes: ");
-                    let _ = credentials::update_credential(
-                        &account.creds.email,
-                        &account.creds,
-                        &self.cfg,
-                    );
-                }
-                "t" => {
-                    account.creds.tags = prompt("Tags: ");
-                    let _ = credentials::update_credential(
-                        &account.creds.email,
-                        &account.creds,
-                        &self.cfg,
-                    );
-                }
-                "d" => {
-                    if prompt_yes_no("Delete this saved account?", false) {
-                        credentials::delete_credential(
-                            &account.creds.email,
-                            &self.cfg.account_format,
-                        )?;
-                        println!("Deleted.");
-                        return Ok(());
+            let visible: Vec<usize> = accounts
+                .iter()
+                .enumerate()
+                .filter(|(_, account)| {
+                    filter.is_empty()
+                        || account
+                            .creds
+                            .email
+                            .to_lowercase()
+                            .contains(&filter.to_lowercase())
+                        || account
+                            .creds
+                            .tags
+                            .to_lowercase()
+                            .contains(&filter.to_lowercase())
+                })
+                .map(|(index, _)| index)
+                .collect();
+            if !filter.is_empty() {
+                println!("Filter: {filter} ({} match(es))", visible.len());
+            }
+            for (number, index) in visible.iter().enumerate() {
+                let account = &accounts[*index];
+                println!(
+                    "{:>3}. {}  {}  {}",
+                    number + 1,
+                    account.creds.email,
+                    mask(&account.creds.password),
+                    if account.decrypt_failed { "(locked)" } else { "" }
+                );
+            }
+            let choice = prompt("Account number, [/]filter, [c]lear (blank to go back): ");
+            let choice = choice.trim();
+            if choice.is_empty() {
+                return Ok(());
+            }
+            if choice == "/" {
+                filter = prompt("Filter text: ").trim().to_string();
+                continue;
+            }
+            if choice.eq_ignore_ascii_case("c") {
+                filter.clear();
+                continue;
+            }
+            let Ok(number) = choice.parse::<usize>() else {
+                continue;
+            };
+            if number == 0 || number > visible.len() {
+                continue;
+            }
+            let mut account = accounts[visible[number - 1]].clone();
+            loop {
+                separator(&account.creds.email, 60);
+                println!("Email:          {}", account.creds.email);
+                println!("Email password: {}", mask(&account.creds.email_password));
+                println!("MEGA password:  {}", mask(&account.creds.password));
+                let (bits, label, _) = password::strength(&account.creds.password);
+                println!("Strength:       {label} ({bits:.1} bits)");
+                println!("Tags:           {}", account.creds.tags);
+                println!("Notes:          {}", account.creds.notes);
+                println!(
+                    "Last login:     {}",
+                    if account.creds.last_login > 0.0 {
+                        chrono::DateTime::from_timestamp(account.creds.last_login as i64, 0)
+                            .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+                            .unwrap_or_else(|| "-".to_string())
+                    } else {
+                        "-".to_string()
                     }
+                );
+                let action =
+                    prompt("[c]opy email  [C]opy password  [r]eveal  [n]otes  [t]ags  [d]elete  [b]ack: ");
+                let action = action.trim().to_string();
+                if action == "C" {
+                    if util_mod::copy_to_clipboard(&account.creds.password) {
+                        println!("Password copied to the clipboard.");
+                    } else {
+                        println!("No clipboard tool available.");
+                    }
+                    continue;
                 }
-                "b" | "" => return Ok(()),
-                _ => {}
+                match action.to_lowercase().as_str() {
+                    "c" => {
+                        if util_mod::copy_to_clipboard(&account.creds.email) {
+                            println!("Email copied to the clipboard.");
+                        } else {
+                            println!("No clipboard tool available.");
+                        }
+                    }
+                    "r" => {
+                        println!("MEGA password:  {}", account.creds.password);
+                    }
+                    "n" => {
+                        account.creds.notes = prompt("Notes: ");
+                        let _ = credentials::update_credential(
+                            &account.creds.email,
+                            &account.creds,
+                            &self.cfg,
+                        );
+                    }
+                    "t" => {
+                        account.creds.tags = prompt("Tags: ");
+                        let _ = credentials::update_credential(
+                            &account.creds.email,
+                            &account.creds,
+                            &self.cfg,
+                        );
+                    }
+                    "d" => {
+                        if prompt_yes_no("Delete this saved account?", false) {
+                            credentials::delete_credential(
+                                &account.creds.email,
+                                &self.cfg.account_format,
+                            )?;
+                            println!("Deleted.");
+                            accounts = credentials::load_all(
+                                &self.cfg.encryption_password,
+                                &self.cfg.account_format,
+                            );
+                            break;
+                        }
+                    }
+                    "b" | "" => break,
+                    _ => {}
+                }
             }
         }
     }
@@ -284,11 +343,13 @@ impl Menu {
         };
         match choice {
             0 => {
+                p_print("Keeping accounts alive (logging in) ...", Color::Header);
+                let prune = prompt_yes_no("Remove dead accounts automatically?", false);
                 crate::services::alive::check_all(
                     &self.cfg,
                     0,
-                    false,
-                    true,
+                    prune,
+                    prune,
                     true,
                 )
                 .await?;
@@ -303,7 +364,7 @@ impl Menu {
     }
 
     fn pick_account(&self) -> Option<Credentials> {
-        let accounts = credentials::load_all(&self.cfg.encryption_password);
+        let accounts = credentials::load_all(&self.cfg.encryption_password, &self.cfg.account_format);
         if accounts.is_empty() {
             println!("No saved accounts.");
             return None;
@@ -317,16 +378,9 @@ impl Menu {
     }
 
     async fn storage_info(&mut self) -> Result<()> {
-        let Some(creds) = self.pick_account() else {
-            return Ok(());
-        };
-        let client = services::upload::get_session(&self.cfg, &creds).await?;
-        let (used, total) = client.quota().await?;
-        println!(
-            "Storage: {} used of {}",
-            crate::util::human_size(used),
-            crate::util::human_size(total)
-        );
+        // Python's Storage Info runs the full health dashboard over every
+        // saved account, not a single account.
+        crate::services::alive::check_all(&self.cfg, 0, false, false, true).await?;
         Ok(())
     }
 
@@ -442,8 +496,19 @@ impl Menu {
                     self.cfg = crate::config::load(self.profile.as_deref());
                 }
                 6 => {
-                    println!("Opening the Chromium download page...");
-                    let _ = open_url("https://www.google.com/chrome/");
+                    p_print("Downloading Chromium (Chrome for Testing)...", Color::Header);
+                    match crate::browser::install::download_chromium().await {
+                        Ok(path) => {
+                            self.cfg.executable_path = path.to_string_lossy().to_string();
+                            crate::config::save(self.profile.as_deref(), &self.cfg)?;
+                            p_print(
+                                &format!("Chromium downloaded: {}", path.display()),
+                                Color::Ok,
+                            );
+                            p_print("Browser path saved to config.", Color::Ok);
+                        }
+                        Err(e) => p_print(&format!("Failed to download Chromium: {e:#}"), Color::Fail),
+                    }
                 }
                 _ => return Ok(()),
             }

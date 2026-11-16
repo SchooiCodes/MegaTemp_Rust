@@ -69,6 +69,7 @@ async fn run(cli: Cli) -> Result<()> {
     console::set_quiet(cli.quiet);
     console::set_json(cli.json);
     console::set_notify(cli.notify);
+    console::set_verbose(cli.verbose);
     spawn_interrupt_handler();
 
     if let Some(provider) = &cli.provider {
@@ -82,6 +83,10 @@ async fn run(cli: Cli) -> Result<()> {
     }
 
     let mut cfg = config::load(cli.profile.as_deref());
+    // Config quiet is additive, like Python's `--quiet or config.quiet`.
+    if cfg.quiet {
+        console::set_quiet(true);
+    }
 
     // CLI overrides take precedence over the config file.
     if let Some(provider) = &cli.provider {
@@ -134,13 +139,23 @@ async fn run(cli: Cli) -> Result<()> {
     ));
 
     if let Some(url) = &cli.proxy_url {
-        match proxy::ProxyManager::fetch_from_url(url).await {
-            Ok(list) if !list.is_empty() => {
-                cfg.proxy = list[0].clone();
-                p_print(&format!("Using fetched proxy {}", cfg.proxy), Color::Cyan);
+        if proxy::is_active() {
+            // An explicit --proxy / --proxy-file wins, like Python.
+        } else {
+            match proxy::ProxyManager::fetch_from_url(url).await {
+                Ok(list) if !list.is_empty() => {
+                    let count = list.len();
+                    let first = list[0].clone();
+                    cfg.proxy = first.clone();
+                    proxy::set_global(proxy::ProxyManager::from_list(list, cfg.proxy_per_attempt));
+                    p_print(
+                        &format!("Fetched {count} proxy(ies); using {first}"),
+                        Color::Cyan,
+                    );
+                }
+                Ok(_) => p_print("Proxy URL returned no proxies", Color::Warning),
+                Err(e) => p_print(&format!("Could not fetch proxies: {e}"), Color::Warning),
             }
-            Ok(_) => p_print("Proxy URL returned no proxies", Color::Warning),
-            Err(e) => p_print(&format!("Could not fetch proxies: {e}"), Color::Warning),
         }
     }
 
@@ -174,19 +189,49 @@ async fn run(cli: Cli) -> Result<()> {
                     "total": summary.total
                 }
             });
-            println!("{}", serde_json::to_string(&payload)?);
+            println!("{}", serde_json::to_string_pretty(&payload)?);
         } else if !results.is_empty() {
             separator("Accounts", 60);
             for r in &results {
-                println!(
-                    "  {:<34} {:<8} {:>8}  {}",
-                    r.email,
-                    r.status,
-                    r.quota_gb
-                        .map(|q| format!("{q:.1} GB"))
-                        .unwrap_or_else(|| "-".to_string()),
-                    r.tags
-                );
+                let days = r.age_days as i64;
+                let login = match r.last_login_days {
+                    Some(d) if d >= 365.0 => ">1y ago".to_string(),
+                    Some(d) => format!("{}d ago", d as i64),
+                    None => "never".to_string(),
+                };
+                let tag = if r.tags.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", r.tags)
+                };
+                if r.status == "alive" {
+                    let quota = r.quota_gb.unwrap_or(0.0);
+                    p_print(
+                        &format!(
+                            "  OK   {:<35} {:>5.1} GB {} {:>3}d old ll:{}{}",
+                            r.email,
+                            quota,
+                            util::storage_bar(quota, 20),
+                            days,
+                            login,
+                            tag
+                        ),
+                        Color::Ok,
+                    );
+                } else {
+                    let label = match r.status.as_str() {
+                        "pruned" => "PRUNED",
+                        "error" => "ERROR",
+                        _ => "DEAD",
+                    };
+                    p_print(
+                        &format!(
+                            "  {:<5} {:<35} {:>8}   {:>3}d old ll:{}{}",
+                            label, r.email, "-", days, login, tag
+                        ),
+                        Color::Warning,
+                    );
+                }
                 if let Some(err) = &r.error {
                     p_print(&format!("      {err}"), Color::Warning);
                 }
@@ -213,7 +258,7 @@ async fn run(cli: Cli) -> Result<()> {
     }
 
     if cli.list_cloud || cli.download_cloud.is_some() {
-        let accounts = credentials::load_all(&cfg.encryption_password);
+        let accounts = credentials::load_all(&cfg.encryption_password, &cfg.account_format);
         let Some(account) = accounts.into_iter().find(|a| !a.decrypt_failed) else {
             bail!("no usable saved accounts found");
         };
