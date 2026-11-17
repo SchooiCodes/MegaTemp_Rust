@@ -108,6 +108,7 @@ pub struct App {
     reveal_password: bool,
     confirm_delete: bool,
     folder_name: String,
+    maximized: bool,
 }
 
 impl App {
@@ -149,6 +150,7 @@ impl App {
             reveal_password: false,
             confirm_delete: false,
             folder_name: String::new(),
+            maximized: true,
         };
         app.reload();
         if app.cloud_account.is_empty() {
@@ -378,6 +380,17 @@ impl App {
                     ui.label(RichText::new(console::VERSION).size(12.0).color(t::FAINT));
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let toggle = if self.maximized { "Restore" } else { "Maximize" };
+                        if ui
+                            .small_button(toggle)
+                            .on_hover_text("Maximize or restore the window")
+                            .clicked()
+                        {
+                            self.maximized = !self.maximized;
+                            ui.ctx()
+                                .send_viewport_cmd(egui::ViewportCommand::Maximized(self.maximized));
+                        }
+                        ui.add_space(10.0);
                         if ui
                             .small_button("?")
                             .on_hover_text("Quick guide and keyboard shortcuts")
@@ -542,11 +555,9 @@ impl App {
                     .size(11.0)
                     .color(t::FAINT),
             );
-            let table_height = (ui.available_height() - 86.0).max(180.0);
             TableBuilder::new(ui)
                 .striped(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .max_scroll_height(table_height)
                 .column(Column::initial(290.0).at_least(220.0))
                 .column(Column::remainder().at_least(90.0))
                 .column(Column::initial(180.0).at_least(120.0))
@@ -952,11 +963,9 @@ impl App {
                 .size(11.0)
                 .color(t::FAINT),
             );
-            let table_height = (ui.available_height() - 66.0).max(180.0);
             TableBuilder::new(ui)
                 .striped(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .max_scroll_height(table_height)
                 .column(Column::initial(300.0).at_least(220.0))
                 .column(Column::exact(90.0))
                 .column(Column::exact(100.0))
@@ -1194,11 +1203,9 @@ impl App {
                 ui.add_space(14.0);
                 return;
             }
-            let table_height = (ui.available_height() - 40.0).max(180.0);
             TableBuilder::new(ui)
                 .striped(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .max_scroll_height(table_height)
                 .column(Column::initial(300.0).at_least(200.0))
                 .column(Column::exact(150.0))
                 .column(Column::exact(100.0))
@@ -1747,16 +1754,25 @@ impl eframe::App for App {
                     .fill(t::BG)
                     .inner_margin(egui::Margin::symmetric(28, 22)),
             )
-            .show(ui, |ui| match self.screen {
-                Screen::Dashboard => self.dashboard(ui),
-                Screen::Create => self.create_screen(ui),
-                Screen::Keepalive => self.keepalive_screen(ui),
-                Screen::Cloud => self.cloud_screen(ui),
-                Screen::Accounts => {
-                    self.sync_selection();
-                    self.accounts_screen(ui)
-                }
-                Screen::Settings => self.settings_screen(ui),
+            .show(ui, |ui| {
+                // One outer scroll area for every screen: a small window must
+                // never clip a form or a table with no way to reach the rest.
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        match self.screen {
+                            Screen::Dashboard => self.dashboard(ui),
+                            Screen::Create => self.create_screen(ui),
+                            Screen::Keepalive => self.keepalive_screen(ui),
+                            Screen::Cloud => self.cloud_screen(ui),
+                            Screen::Accounts => {
+                                self.sync_selection();
+                                self.accounts_screen(ui)
+                            }
+                            Screen::Settings => self.settings_screen(ui),
+                        }
+                    });
             });
         self.toast_overlay(ui);
         self.help_window(ui);
