@@ -371,7 +371,7 @@ impl App {
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.add(
-                        egui::Image::new(egui::include_image!("../../assets/megatemp.png"))
+                        egui::Image::new(egui::include_image!("../../assets/megatemp.svg"))
                             .fit_to_exact_size(egui::vec2(30.0, 30.0)),
                     )
                     .on_hover_text("MegaTemp");
