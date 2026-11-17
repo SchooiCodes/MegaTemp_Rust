@@ -2,8 +2,8 @@
 //!
 //! Everything the terminal UI and the GUI need lives here: the MEGA client,
 //! mail providers, browser automation, credential storage, configuration and
-//! the shared rendering helpers. The two binaries (`megatem` and
-//! `megatem-gui`) are thin shells over this crate.
+//! the shared rendering helpers. The two binaries (`megatemp` and
+//! `megatemp-gui`) are thin shells over this crate.
 
 #![allow(dead_code)]
 

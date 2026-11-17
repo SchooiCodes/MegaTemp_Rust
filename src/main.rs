@@ -6,7 +6,7 @@
 
 #![allow(dead_code)]
 
-use megatem::{
+use megatemp::{
     browser, cli, config, console, credentials, disk, mail, menu, models, proxy, services, update,
     util,
 };

@@ -1,5 +1,5 @@
 [package]
-name = "megatem"
+name = "megatemp"
 version = "1.8.0"
 edition = "2021"
 description = "MegaTemp - bulk MEGA account creator and manager (Rust port)"
@@ -7,11 +7,11 @@ license = "GPL-3.0-only"
 repository = "https://github.com/SchooiCodes/MegaTemp"
 
 [lib]
-name = "megatem"
+name = "megatemp"
 path = "src/lib.rs"
 
 [[bin]]
-name = "megatem"
+name = "megatemp"
 path = "src/main.rs"
 
 [dependencies]

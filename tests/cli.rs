@@ -7,11 +7,11 @@ use std::path::Path;
 use std::process::Command;
 
 fn run(dir: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_megatem"))
+    Command::new(env!("CARGO_BIN_EXE_megatemp"))
         .args(args)
         .current_dir(dir)
         .output()
-        .expect("failed to run megatem")
+        .expect("failed to run megatemp")
 }
 
 fn stdout(output: &std::process::Output) -> String {

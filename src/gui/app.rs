@@ -96,6 +96,8 @@ pub struct App {
     help_open: bool,
     cloud_loaded: bool,
     cloud_files: Vec<CloudFile>,
+    cloud_filter: String,
+    cloud_sort: u8,
     selected_row: usize,
     selected_email: String,
     edit_tags: String,
@@ -132,6 +134,8 @@ impl App {
             help_open: false,
             cloud_loaded: false,
             cloud_files: Vec::new(),
+            cloud_filter: String::new(),
+            cloud_sort: 0,
             selected_row: 0,
             selected_email: String::new(),
             edit_tags: String::new(),
@@ -251,6 +255,8 @@ impl App {
                 UiEvent::CloudFiles(files) => {
                     self.cloud_files = files;
                     self.cloud_loaded = true;
+                    self.busy = false;
+                    self.status = None;
                 }
                 UiEvent::Toast { kind, text } => {
                     self.push_toast(&kind, if kind == "error" { format!("Error: {text}") } else { text });
@@ -925,53 +931,168 @@ impl App {
     }
 
     fn cloud_screen(&mut self, ui: &mut egui::Ui) {
+        // Load once when the screen is first opened. The bridge emits
+        // CloudFiles, which fills the list below.
+        if !self.cloud_loaded && !self.busy {
+            self.cloud_loaded = true;
+            self.busy = true;
+            self.status = Some("Loading cloud files...".to_string());
+            let _ = self.bridge.commands.send(Command::ListCloud);
+        }
         ui.label(RichText::new("Cloud").size(24.0).strong().color(t::TEXT));
         ui.add_space(4.0);
+        let account = self
+            .rows
+            .first()
+            .map(|row| row.email.clone())
+            .unwrap_or_else(|| "no saved account".to_string());
         ui.label(
-            RichText::new("Files on the most recently used account.")
+            RichText::new(format!("Files in {account}"))
                 .size(13.0)
                 .color(t::MUTED),
         );
         ui.add_space(18.0);
-        ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() && !self.busy {
-                self.busy = true;
-                let _ = self.bridge.commands.send(Command::ListCloud);
-            }
-            if ui.button("Upload file").clicked() && !self.busy {
-                if let Some(path) = rfd::FileDialog::new().pick_file() {
-                    self.busy = true;
-                    let _ = self.bridge.commands.send(Command::UploadFile { path });
-                }
-            }
-        });
-        if let Some(status) = &self.status {
-            ui.add_space(6.0);
-            ui.label(RichText::new(status).size(12.0).color(t::MUTED));
-        }
-        ui.add_space(14.0);
-        let mut download_handle: Option<String> = None;
+
+        let files = self.cloud_files.clone();
+        let total: u64 = files.iter().map(|file| file.size).sum();
+        let mut refresh_clicked = false;
+        let mut upload_clicked = false;
         t::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
-            if self.cloud_files.is_empty() {
-                ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "{} file{}",
+                            files.len(),
+                            if files.len() == 1 { "" } else { "s" }
+                        ))
+                        .size(17.0)
+                        .strong()
+                        .color(t::TEXT),
+                    );
+                    ui.label(
+                        RichText::new(format!("{} total", crate::util::human_size(total)))
+                            .size(11.5)
+                            .color(t::MUTED),
+                    );
+                });
+                // Push the actions to the right edge without over-allocating:
+                // `available_width()` here is the space left after the summary,
+                // so leave just enough for the two buttons.
+                let gap = (ui.available_width() - 200.0).max(8.0);
+                ui.add_space(gap);
+                if ui.button("Refresh").clicked() {
+                    refresh_clicked = true;
+                }
+                if ui.button(RichText::new("Upload file").color(t::TEXT)).clicked() {
+                    upload_clicked = true;
+                }
+            });
+            if let Some(status) = &self.status {
+                ui.add_space(6.0);
+                ui.label(RichText::new(status).size(12.0).color(t::MUTED));
+            }
+        });
+        if refresh_clicked && !self.busy {
+            self.busy = true;
+            self.status = Some("Loading cloud files...".to_string());
+            let _ = self.bridge.commands.send(Command::ListCloud);
+        }
+        if upload_clicked && !self.busy {
+            if let Some(path) = rfd::FileDialog::new().pick_file() {
+                self.busy = true;
+                self.status = Some(format!(
+                    "Uploading {}...",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                ));
+                let _ = self.bridge.commands.send(Command::UploadFile { path });
+            }
+        }
+        ui.add_space(12.0);
+
+        t::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Find").color(t::MUTED));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.cloud_filter)
+                        .hint_text("name or handle")
+                        .desired_width(240.0),
+                );
+                let sort_label = match self.cloud_sort {
+                    0 => "Sort: Name",
+                    1 => "Sort: Size",
+                    _ => "Sort: Handle",
+                };
+                if ui.button(sort_label).clicked() {
+                    self.cloud_sort = (self.cloud_sort + 1) % 3;
+                }
+                if !self.cloud_filter.is_empty() && ui.button("Clear").clicked() {
+                    self.cloud_filter.clear();
+                }
+            });
+        });
+        ui.add_space(12.0);
+
+        let needle = self.cloud_filter.trim().to_lowercase();
+        let mut shown: Vec<CloudFile> = files
+            .clone()
+            .into_iter()
+            .filter(|file| {
+                needle.is_empty()
+                    || file.name.to_lowercase().contains(&needle)
+                    || file.handle.to_lowercase().contains(&needle)
+            })
+            .collect();
+        match self.cloud_sort {
+            0 => shown.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+            1 => shown.sort_by(|a, b| b.size.cmp(&a.size)),
+            _ => shown.sort_by(|a, b| a.handle.cmp(&b.handle)),
+        }
+        let shown_count = shown.len();
+        let mut download_handle: Option<String> = None;
+        let mut copy_handle: Option<String> = None;
+        t::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            if files.is_empty() {
+                ui.add_space(14.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        RichText::new("No files on this account yet")
+                            .size(14.0)
+                            .strong()
+                            .color(t::TEXT),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("Use Upload file above to put something in the cloud.")
+                            .size(12.0)
+                            .color(t::MUTED),
+                    );
+                });
+                ui.add_space(14.0);
+                return;
+            }
+            if shown.is_empty() {
+                ui.add_space(14.0);
                 ui.label(
-                    RichText::new("No files yet. Refresh to list the remote account.")
+                    RichText::new("No files match the search.")
                         .size(13.0)
                         .color(t::MUTED),
                 );
-                ui.add_space(10.0);
+                ui.add_space(14.0);
                 return;
             }
-            let table_height = (ui.available_height() - 46.0).max(180.0);
+            let table_height = (ui.available_height() - 40.0).max(180.0);
             TableBuilder::new(ui)
                 .striped(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .max_scroll_height(table_height)
-                .column(Column::initial(260.0).at_least(180.0))
-                .column(Column::exact(120.0))
-                .column(Column::remainder().at_least(90.0))
-                .column(Column::exact(178.0))
+                .column(Column::initial(300.0).at_least(200.0))
+                .column(Column::exact(150.0))
+                .column(Column::exact(100.0))
+                .column(Column::remainder().at_least(190.0))
                 .header(30.0, |mut header| {
                     for title in ["Name", "Handle", "Size", "Actions"] {
                         header.col(|ui| {
@@ -980,29 +1101,77 @@ impl App {
                     }
                 })
                 .body(|mut body| {
-                    for file in self.cloud_files.clone() {
-                        body.row(34.0, |mut row| {
-                            row.col(|ui| { ui.label(&file.name); });
-                            row.col(|ui| { ui.monospace(&file.handle); });
-                            row.col(|ui| { ui.label(crate::util::human_size(file.size)); });
+                    for file in &shown {
+                        body.row(38.0, |mut row| {
                             row.col(|ui| {
-                                if ui.small_button("Download").clicked() {
-                                    download_handle = Some(file.handle.clone());
-                                }
-                                if ui.small_button("Copy handle").clicked() {
-                                    ui.ctx().copy_text(file.handle.clone());
-                                    self.push_toast("ok", "Handle copied to clipboard");
-                                }
+                                ui.horizontal(|ui| {
+                                    let (dot, _) = ui.allocate_exact_size(
+                                        egui::vec2(8.0, 8.0),
+                                        egui::Sense::hover(),
+                                    );
+                                    ui.painter().circle_filled(dot.center(), 4.0, t::ACCENT);
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(&file.name).color(t::TEXT),
+                                        )
+                                        .truncate(),
+                                    )
+                                    .on_hover_text(&file.name);
+                                });
+                            });
+                            row.col(|ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(&file.handle)
+                                            .monospace()
+                                            .size(11.0)
+                                            .color(t::MUTED),
+                                    )
+                                    .truncate(),
+                                )
+                                .on_hover_text(&file.handle);
+                            });
+                            row.col(|ui| {
+                                ui.label(
+                                    RichText::new(crate::util::human_size(file.size))
+                                        .size(12.0)
+                                        .color(t::MUTED),
+                                );
+                            });
+                            row.col(|ui| {
+                                ui.horizontal(|ui| {
+                                    if ui.button("Download").clicked() {
+                                        download_handle = Some(file.handle.clone());
+                                    }
+                                    if ui.button("Copy").clicked() {
+                                        copy_handle = Some(file.handle.clone());
+                                    }
+                                });
                             });
                         });
                     }
                 });
+            if shown_count != files.len() {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(format!("Showing {shown_count} of {} files", files.len()))
+                        .size(11.0)
+                        .color(t::MUTED),
+                );
+            }
         });
+        if let Some(handle) = copy_handle {
+            ui.ctx().copy_text(handle.clone());
+            self.push_toast("ok", format!("Copied handle {handle}"));
+        }
         if let Some(handle) = download_handle {
             if let Some(dest) = rfd::FileDialog::new().pick_folder() {
                 self.busy = true;
                 self.status = Some(format!("Downloading {handle}..."));
-                let _ = self.bridge.commands.send(Command::DownloadFile { handle, dest });
+                let _ = self
+                    .bridge
+                    .commands
+                    .send(Command::DownloadFile { handle, dest });
             }
         }
     }
@@ -1352,7 +1521,7 @@ impl App {
                 }
                 ui.add_space(10.0);
                 ui.label(
-                    RichText::new("All CLI flags still work in the megatem binary.")
+                    RichText::new("All CLI flags still work in the megatemp binary.")
                         .size(12.0)
                         .color(t::FAINT),
                 );

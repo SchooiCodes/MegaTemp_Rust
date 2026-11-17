@@ -51,14 +51,14 @@ Grab the matching asset from the
 cargo build --release
 ```
 
-The binary is written to `target/release/megatem` (`megatem.exe` on Windows).
+The binary is written to `target/release/megatemp` (`megatemp.exe` on Windows).
 A C toolchain is needed for the TLS stack; on Windows that means the MSVC build
 tools.
 
 ## Your first account
 
 ```sh
-megatem
+megatemp
 ```
 
 With no arguments the interactive menu opens. Choose *Create Accounts* and the
@@ -72,14 +72,14 @@ If no browser is found you are prompted for a path; it is remembered in
 ## Common tasks
 
 ```sh
-megatem -a 4 -sh                  # one account, visible browser
-megatem -l 10 -j 4               # 10 accounts, 4 in parallel
-megatem --keepalive --prune -y   # check every account, drop dead ones
-megatem --extract                # write credentials.txt
-megatem --export-bitwarden       # also: --export-onepassword, --export-keepass
-megatem --list-cloud             # list files in a saved account's drive
-megatem --disk-usage             # where the space went
-megatem --clean                  # remove profiles, .part files, old backups
+megatemp -a 4 -sh                  # one account, visible browser
+megatemp -l 10 -j 4               # 10 accounts, 4 in parallel
+megatemp --keepalive --prune -y   # check every account, drop dead ones
+megatemp --extract                # write credentials.txt
+megatemp --export-bitwarden       # also: --export-onepassword, --export-keepass
+megatemp --list-cloud             # list files in a saved account's drive
+megatemp --disk-usage             # where the space went
+megatemp --clean                  # remove profiles, .part files, old backups
 ```
 
 `--resume` picks a `--loop` run back up from `loop_state.json`.
@@ -151,7 +151,7 @@ normalised before parsing.
 
 ## GUI
 
-A native desktop app ships as `megatem-gui` (`target/release/megatem-gui.exe`).
+A native desktop app ships as `megatemp-gui` (`target/release/megatemp-gui.exe`).
 It reuses the same library and `config.json`, so accounts created in either
 interface show up in the other. The dashboard lists every saved account with
 search, and the Create / Keepalive / Cloud / Accounts / Settings screens
@@ -159,7 +159,7 @@ mirror the CLI: batch creation with per-worker progress, keepalive with quota
 bars, upload and download, reveal/copy passwords, tag and note editing,
 account deletion, folder creation, and a full settings editor.
 
-Run `megatem-gui` (or `cargo run --bin megatem-gui --release`). The window
+Run `megatemp-gui` (or `cargo run --bin megatemp-gui --release`). The window
 opens at 1180x760 and remembers nothing beyond the shared config file.
 
 ## Interactive menu

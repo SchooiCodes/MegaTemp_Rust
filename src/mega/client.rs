@@ -696,14 +696,14 @@ mod tests {
     async fn live_upload_roundtrip() {
         let email = std::env::var("MEGATEM_LIVE_EMAIL").expect("MEGATEM_LIVE_EMAIL");
         let password = std::env::var("MEGATEM_LIVE_PASSWORD").expect("MEGATEM_LIVE_PASSWORD");
-        let body = b"megatem live upload probe";
+        let body = b"megatemp live upload probe";
 
         let mut client = MegaClient::new(None).expect("client");
         client.login(&email, &password).await.expect("login");
         assert!(!client.root_id.is_empty(), "root folder was not found");
         assert!(!client.sid.is_none(), "no session id");
 
-        let dir = std::env::temp_dir().join("megatem_live_upload");
+        let dir = std::env::temp_dir().join("megatemp_live_upload");
         std::fs::create_dir_all(&dir).expect("temp dir");
         let path = dir.join("live_probe.txt");
         std::fs::write(&path, body).expect("write probe");

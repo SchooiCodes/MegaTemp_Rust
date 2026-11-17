@@ -2,7 +2,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use megatem::gui::{egui, App};
+use megatemp::gui::{egui, App};
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {

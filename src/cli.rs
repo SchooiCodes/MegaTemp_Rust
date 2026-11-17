@@ -3,10 +3,10 @@ use std::path::PathBuf;
 
 #[derive(Parser, Debug, Clone)]
 #[command(
-    name = "megatem",
+    name = "megatemp",
     version = "v1.8.0",
     about = "Bulk MEGA account creator and manager",
-    after_help = "Examples:\n  megatem                       Open the interactive menu\n  megatem -a 4 -sh               Create one account visibly\n  megatem -l 10 -j 4             Create 10 accounts with 4 workers\n  megatem --keepalive --prune -y Check accounts and prune dead ones\n  megatem --export-bitwarden     Export all accounts to Bitwarden CSV"
+    after_help = "Examples:\n  megatemp                       Open the interactive menu\n  megatemp -a 4 -sh               Create one account visibly\n  megatemp -l 10 -j 4             Create 10 accounts with 4 workers\n  megatemp --keepalive --prune -y Check accounts and prune dead ones\n  megatemp --export-bitwarden     Export all accounts to Bitwarden CSV"
 )]
 pub struct Cli {
     /// Registration attempts per provider
