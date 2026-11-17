@@ -6,7 +6,7 @@ use megatemp::gui::{egui, App};
 
 /// The MegaTemp logo, decoded from the embedded PNG for the window/taskbar icon.
 fn logo_icon() -> egui::IconData {
-    let image = image::load_from_memory(include_bytes!("../../assets/MegaTemp.png"))
+    let image = image::load_from_memory(include_bytes!("../../assets/megatemp.png"))
         .expect("embedded MegaTemp logo is a valid PNG")
         .to_rgba8();
     let (width, height) = image.dimensions();
