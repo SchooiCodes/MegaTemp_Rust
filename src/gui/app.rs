@@ -92,6 +92,7 @@ pub struct App {
     prune: bool,
     keep_rows: Vec<(String, bool, Option<f64>, Option<String>)>,
     keep_summary: Option<(usize, usize, usize, usize)>,
+    keep_filter: String,
     toasts: Vec<Toast>,
     help_open: bool,
     cloud_loaded: bool,
@@ -130,6 +131,7 @@ impl App {
             prune: false,
             keep_rows: Vec::new(),
             keep_summary: None,
+            keep_filter: String::new(),
             toasts: Vec::new(),
             help_open: false,
             cloud_loaded: false,
@@ -464,6 +466,9 @@ impl App {
                 if ui.button("Refresh").clicked() {
                     self.reload();
                 }
+                if !self.filter.is_empty() && ui.button("Clear").clicked() {
+                    self.filter.clear();
+                }
                 ui.add(
                     egui::TextEdit::singleline(&mut self.filter)
                         .hint_text("Search email or tags")
@@ -518,7 +523,12 @@ impl App {
                 return;
             }
 
-            let table_height = (ui.available_height() - 76.0).max(180.0);
+            ui.label(
+                RichText::new(format!("Showing {} of {} accounts", visible.len(), total))
+                    .size(11.0)
+                    .color(t::FAINT),
+            );
+            let table_height = (ui.available_height() - 86.0).max(180.0);
             TableBuilder::new(ui)
                 .striped(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
@@ -621,7 +631,7 @@ impl App {
 
         t::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
-            t::section_label("Batch");
+            ui.label(t::section_label("Batch"));
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Accounts").size(13.0).color(t::MUTED))
@@ -727,7 +737,7 @@ impl App {
             ui.add_space(14.0);
             t::card().show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                t::section_label(&format!("Created this run ({})", self.created.len()));
+                ui.label(t::section_label(&format!("Created this run ({})", self.created.len())));
                 ui.add_space(6.0);
                 egui::ScrollArea::vertical()
                     .max_height(220.0)
@@ -857,7 +867,7 @@ impl App {
                 {
                     t::card().show(&mut cols[index], |ui| {
                         ui.set_width(ui.available_width());
-                        t::section_label(label);
+                        ui.label(t::section_label(label));
                         ui.label(
                             RichText::new(value.to_string())
                                 .size(26.0)
@@ -872,6 +882,33 @@ impl App {
         ui.add_space(14.0);
         t::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.keep_filter)
+                        .hint_text("Find email or error")
+                        .desired_width(260.0),
+                );
+                if !self.keep_filter.is_empty() && ui.button("Clear").clicked() {
+                    self.keep_filter.clear();
+                }
+                if let Some(status) = &self.status {
+                    ui.label(RichText::new(status).size(12.0).color(t::MUTED));
+                }
+            });
+            ui.add_space(8.0);
+
+            let needle = self.keep_filter.trim().to_lowercase();
+            let rows: Vec<_> = self
+                .keep_rows
+                .iter()
+                .filter(|(email, _, _, error)| {
+                    needle.is_empty()
+                        || email.to_lowercase().contains(&needle)
+                        || error.as_deref().unwrap_or("").to_lowercase().contains(&needle)
+                })
+                .cloned()
+                .collect();
+
             if self.keep_rows.is_empty() {
                 ui.add_space(10.0);
                 ui.label(
@@ -882,14 +919,33 @@ impl App {
                 ui.add_space(10.0);
                 return;
             }
-            let table_height = (ui.available_height() - 40.0).max(180.0);
+            if rows.is_empty() {
+                ui.add_space(10.0);
+                ui.label(
+                    RichText::new("No accounts match this search.")
+                        .size(13.0)
+                        .color(t::MUTED),
+                );
+                ui.add_space(10.0);
+                return;
+            }
+            ui.label(
+                RichText::new(format!(
+                    "Showing {} of {} accounts",
+                    rows.len(),
+                    self.keep_rows.len()
+                ))
+                .size(11.0)
+                .color(t::FAINT),
+            );
+            let table_height = (ui.available_height() - 66.0).max(180.0);
             TableBuilder::new(ui)
                 .striped(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .max_scroll_height(table_height)
                 .column(Column::initial(300.0).at_least(220.0))
                 .column(Column::exact(90.0))
-                .column(Column::exact(90.0))
+                .column(Column::exact(100.0))
                 .column(Column::remainder().at_least(160.0))
                 .header(30.0, |mut header| {
                     for title in ["Email", "Status", "Storage", "Detail"] {
@@ -899,8 +955,8 @@ impl App {
                     }
                 })
                 .body(|body| {
-                    body.rows(34.0, self.keep_rows.len(), |mut row| {
-                        let (email, alive, quota, error) = &self.keep_rows[row.index()];
+                    body.rows(34.0, rows.len(), |mut row| {
+                        let (email, alive, quota, error) = &rows[row.index()];
                         row.col(|ui| {
                             ui.label(RichText::new(email).monospace().size(12.0).color(t::TEXT));
                         });
