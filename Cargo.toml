@@ -5,6 +5,10 @@ edition = "2021"
 description = "MegaTemp - bulk MEGA account creator and manager (Rust port)"
 license = "GPL-3.0-only"
 repository = "https://github.com/SchooiCodes/MegaTemp"
+build = "build.rs"
+
+[build-dependencies]
+embed-resource = "3.0"
 
 [lib]
 name = "megatemp"
