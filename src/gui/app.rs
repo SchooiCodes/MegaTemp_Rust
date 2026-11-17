@@ -950,6 +950,7 @@ impl App {
             ui.label(RichText::new(status).size(12.0).color(t::MUTED));
         }
         ui.add_space(14.0);
+        let mut download_handle: Option<String> = None;
         t::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
             if self.cloud_files.is_empty() {
@@ -970,8 +971,9 @@ impl App {
                 .column(Column::initial(260.0).at_least(180.0))
                 .column(Column::exact(120.0))
                 .column(Column::remainder().at_least(90.0))
+                .column(Column::exact(178.0))
                 .header(30.0, |mut header| {
-                    for title in ["Name", "Handle", "Size"] {
+                    for title in ["Name", "Handle", "Size", "Actions"] {
                         header.col(|ui| {
                             ui.label(t::section_label(title));
                         });
@@ -983,10 +985,26 @@ impl App {
                             row.col(|ui| { ui.label(&file.name); });
                             row.col(|ui| { ui.monospace(&file.handle); });
                             row.col(|ui| { ui.label(crate::util::human_size(file.size)); });
+                            row.col(|ui| {
+                                if ui.small_button("Download").clicked() {
+                                    download_handle = Some(file.handle.clone());
+                                }
+                                if ui.small_button("Copy handle").clicked() {
+                                    ui.ctx().copy_text(file.handle.clone());
+                                    self.push_toast("ok", "Handle copied to clipboard");
+                                }
+                            });
                         });
                     }
                 });
         });
+        if let Some(handle) = download_handle {
+            if let Some(dest) = rfd::FileDialog::new().pick_folder() {
+                self.busy = true;
+                self.status = Some(format!("Downloading {handle}..."));
+                let _ = self.bridge.commands.send(Command::DownloadFile { handle, dest });
+            }
+        }
     }
 
     fn accounts_screen(&mut self, ui: &mut egui::Ui) {
@@ -1133,62 +1151,114 @@ impl App {
         );
         ui.add_space(18.0);
         egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::Grid::new("settings_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-                ui.label("Max attempts");
-                ui.add(egui::DragValue::new(&mut self.settings.max_attempts).range(1..=10));
-                ui.end_row();
-                ui.label("Email provider");
-                ui.text_edit_singleline(&mut self.settings.email_provider);
-                ui.end_row();
-                ui.label("Mail timeout (s)");
-                ui.add(egui::DragValue::new(&mut self.settings.mail_timeout).range(30..=600));
-                ui.end_row();
-                ui.label("Visible browser");
-                ui.checkbox(&mut self.settings.visible_browser, "");
-                ui.end_row();
-                ui.label("Auto CSV export");
-                ui.checkbox(&mut self.settings.csv_export, "");
-                ui.end_row();
-                ui.label("Auto JSONL export");
-                ui.checkbox(&mut self.settings.jsonl_export, "");
-                ui.end_row();
-                ui.label("Proxy");
-                ui.text_edit_singleline(&mut self.settings.proxy);
-                ui.end_row();
-                ui.label("Proxy file");
-                ui.text_edit_singleline(&mut self.settings.proxy_file);
-                ui.end_row();
-                ui.label("Proxy per attempt");
-                ui.checkbox(&mut self.settings.proxy_per_attempt, "");
-                ui.end_row();
-                ui.label("Webhook URL");
-                ui.text_edit_singleline(&mut self.settings.webhook_url);
-                ui.end_row();
-                ui.label("Account format");
-                ui.text_edit_singleline(&mut self.settings.account_format);
-                ui.end_row();
-                ui.label("Encryption password");
-                ui.text_edit_singleline(&mut self.settings.encryption_password);
-                ui.end_row();
-                ui.label("Chromium path");
-                ui.text_edit_singleline(&mut self.settings.executable_path);
-                ui.end_row();
+            t::card().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(t::section_label("Registration"));
+                egui::Grid::new("settings_registration").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                    ui.label("Email provider");
+                    ui.text_edit_singleline(&mut self.settings.email_provider);
+                    ui.end_row();
+                    ui.label("Max attempts");
+                    ui.add(egui::DragValue::new(&mut self.settings.max_attempts).range(1..=10));
+                    ui.end_row();
+                    ui.label("Mail timeout (s)");
+                    ui.add(egui::DragValue::new(&mut self.settings.mail_timeout).range(30..=600));
+                    ui.end_row();
+                    ui.label("Visible browser");
+                    ui.checkbox(&mut self.settings.visible_browser, "");
+                    ui.end_row();
+                    ui.label("Browser path");
+                    ui.horizontal(|ui| {
+                        ui.text_edit_singleline(&mut self.settings.executable_path);
+                        if ui.button("Browse...").clicked() {
+                            if let Some(path) = rfd::FileDialog::new().add_filter("Browser", &["exe"]).pick_file() {
+                                self.settings.executable_path = path.to_string_lossy().to_string();
+                            }
+                        }
+                    });
+                    ui.end_row();
+                });
             });
-            ui.separator();
+            ui.add_space(12.0);
+            t::card().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(t::section_label("Exports"));
+                egui::Grid::new("settings_exports").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                    ui.label("Auto CSV export");
+                    ui.checkbox(&mut self.settings.csv_export, "");
+                    ui.end_row();
+                    ui.label("Auto JSONL export");
+                    ui.checkbox(&mut self.settings.jsonl_export, "");
+                    ui.end_row();
+                    ui.label("Account format");
+                    ui.text_edit_singleline(&mut self.settings.account_format);
+                    ui.end_row();
+                });
+            });
+            ui.add_space(12.0);
+            t::card().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(t::section_label("Network & updates"));
+                egui::Grid::new("settings_network").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                    ui.label("Proxy");
+                    ui.text_edit_singleline(&mut self.settings.proxy);
+                    ui.end_row();
+                    ui.label("Proxy file");
+                    ui.text_edit_singleline(&mut self.settings.proxy_file);
+                    ui.end_row();
+                    ui.label("Proxy per attempt");
+                    ui.checkbox(&mut self.settings.proxy_per_attempt, "");
+                    ui.end_row();
+                    ui.label("Webhook URL");
+                    ui.text_edit_singleline(&mut self.settings.webhook_url);
+                    ui.end_row();
+                    ui.label("Notifications / quiet");
+                    ui.checkbox(&mut self.settings.quiet, "");
+                    ui.end_row();
+                });
+            });
+            ui.add_space(12.0);
+            t::card().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(t::section_label("Security & credentials"));
+                egui::Grid::new("settings_security").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                    ui.label("Encryption password");
+                    ui.add(egui::TextEdit::singleline(&mut self.settings.encryption_password).password(true));
+                    ui.end_row();
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let install = ui.add_enabled(!self.busy, egui::Button::new("Install Chromium"));
+                    if install.clicked() {
+                        self.busy = true;
+                        let _ = self.bridge.commands.send(Command::InstallChromium);
+                    }
+                    if ui.button("Export credentials").clicked() {
+                        match crate::services::extract::extract_credentials(&self.settings, &self.settings.account_format) {
+                            Ok(path) => self.push_toast("ok", format!("Exported to {}", path.display())),
+                            Err(e) => self.push_toast("error", format!("Export failed: {e}")),
+                        }
+                    }
+                });
+            });
+            ui.add_space(16.0);
             ui.horizontal(|ui| {
-                if ui.button("Save").clicked() {
-                    let _ = self.bridge.commands.send(Command::UpdateConfig(self.settings.clone()));
-                    self.cfg = self.settings.clone();
-                    self.reload();
+                if ui.add(egui::Button::new("Save settings").fill(t::ACCENT)).clicked() {
+                    match crate::config::save(None, &self.settings) {
+                        Ok(()) => {
+                            let _ = self.bridge.commands.send(Command::UpdateConfig(self.settings.clone()));
+                            self.cfg = self.settings.clone();
+                            self.reload();
+                            self.push_toast("ok", "Settings saved");
+                        }
+                        Err(e) => self.push_toast("error", format!("Could not save settings: {e}")),
+                    }
                 }
-                if ui.button("Download Chromium").clicked() && !self.busy {
-                    self.busy = true;
-                    let _ = self.bridge.commands.send(Command::InstallChromium);
+                if ui.button("Reset").clicked() {
+                    self.settings = self.cfg.clone();
+                    self.push_toast("ok", "Changes discarded");
                 }
             });
-            if let Some(toast) = &self.toast {
-                ui.label(toast);
-            }
         });
     }
 
@@ -1216,6 +1286,78 @@ impl App {
             ui.add_space(12.0);
         });
     }
+
+    /// Bottom-centred, auto-dismissing notifications for user actions.
+    fn toast_overlay(&mut self, ui: &mut egui::Ui) {
+        self.toasts
+            .retain(|toast| toast.at.elapsed() < Duration::from_secs(6));
+        let mut dismiss = None;
+        egui::Area::new(egui::Id::unique("toast_overlay"))
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -18.0))
+            .show(ui.ctx(), |ui| {
+                if self.toasts.is_empty() {
+                    return;
+                }
+                t::card().show(ui, |ui| {
+                    ui.set_width(420.0);
+                    for (index, toast) in self.toasts.iter().enumerate() {
+                        let colour = match toast.kind.as_str() {
+                            "ok" => t::OK,
+                            "warn" => t::WARN,
+                            "error" => t::DANGER,
+                            _ => t::TEXT,
+                        };
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(toast.text.clone()).size(12.5).color(colour));
+                            if ui.button("×").on_hover_text("Dismiss").clicked() {
+                                dismiss = Some(index);
+                            }
+                        });
+                    }
+                });
+            });
+        if let Some(index) = dismiss {
+            self.toasts.remove(index);
+        }
+    }
+
+    /// One-screen quick reference, opened with the `?` button or `?` shortcut.
+    fn help_window(&mut self, ui: &mut egui::Ui) {
+        egui::Window::new("Quick guide")
+            .open(&mut self.help_open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ui.ctx(), |ui| {
+                ui.set_width(420.0);
+                ui.label(t::section_label("Screens"));
+                for screen in Screen::ALL {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(screen.label()).strong().color(t::TEXT));
+                        ui.label(RichText::new(screen.description()).size(12.0).color(t::MUTED));
+                    });
+                }
+                ui.add_space(10.0);
+                ui.label(t::section_label("Shortcuts"));
+                for (key, text) in [
+                    ("Ctrl + 1..6", "Jump to a screen"),
+                    ("Ctrl + N", "Start the Create screen"),
+                    ("Ctrl + R", "Refresh the current screen"),
+                    ("Esc", "Back to Overview"),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(key).monospace().color(t::ACCENT));
+                        ui.label(RichText::new(text).size(12.0).color(t::MUTED));
+                    });
+                }
+                ui.add_space(10.0);
+                ui.label(
+                    RichText::new("All CLI flags still work in the megatem binary.")
+                        .size(12.0)
+                        .color(t::FAINT),
+                );
+            });
+    }
 }
 
 impl eframe::App for App {
@@ -1223,6 +1365,50 @@ impl eframe::App for App {
         self.drain_events();
         if self.busy {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(120));
+        }
+        let mut goto = None;
+        let mut refresh = false;
+        ui.input(|input| {
+            use egui::Key;
+            if input.key_pressed(Key::Escape) {
+                goto = Some(Screen::Dashboard);
+            }
+            if input.modifiers.ctrl {
+                if input.key_pressed(Key::N) {
+                    goto = Some(Screen::Create);
+                }
+                if input.key_pressed(Key::R) {
+                    refresh = true;
+                }
+                for (screen, key) in Screen::ALL.iter().zip([
+                    Key::Num1,
+                    Key::Num2,
+                    Key::Num3,
+                    Key::Num4,
+                    Key::Num5,
+                    Key::Num6,
+                ]) {
+                    if input.key_pressed(key) {
+                        goto = Some(*screen);
+                    }
+                }
+            }
+        });
+        if let Some(screen) = goto {
+            self.screen = screen;
+        }
+        if refresh {
+            match self.screen {
+                Screen::Dashboard => self.reload(),
+                Screen::Cloud => {
+                    if !self.busy {
+                        self.busy = true;
+                        let _ = self.bridge.commands.send(Command::ListCloud);
+                    }
+                }
+                Screen::Keepalive => self.start_keepalive(),
+                _ => {}
+            }
         }
         self.top_bar(ui);
         self.rail(ui);
@@ -1237,9 +1423,14 @@ impl eframe::App for App {
                 Screen::Create => self.create_screen(ui),
                 Screen::Keepalive => self.keepalive_screen(ui),
                 Screen::Cloud => self.cloud_screen(ui),
-                Screen::Accounts => self.accounts_screen(ui),
+                Screen::Accounts => {
+                    self.sync_selection();
+                    self.accounts_screen(ui)
+                }
                 Screen::Settings => self.settings_screen(ui),
             });
+        self.toast_overlay(ui);
+        self.help_window(ui);
     }
 }
 
