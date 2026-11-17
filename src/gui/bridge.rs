@@ -24,9 +24,9 @@ pub enum Command {
     Create { total: u64, workers: usize, cfg: Config },
     Keepalive { prune: bool },
     UpdateConfig(Config),
-    ListCloud,
-    UploadFile { path: std::path::PathBuf },
-    DownloadFile { handle: String, dest: std::path::PathBuf },
+    ListCloud { email: String },
+    UploadFile { path: std::path::PathBuf, email: String },
+    DownloadFile { handle: String, dest: std::path::PathBuf, email: String },
     DeleteAccount { email: String },
     CreateFolder { email: String, name: String },
     InstallChromium,
@@ -55,7 +55,7 @@ pub enum UiEvent {
     Finished { ok: u64, failed: u64, seconds: f64 },
     KeepaliveRow { email: String, alive: bool, quota_gb: Option<f64>, error: Option<String> },
     KeepaliveResults(Vec<AliveResult>, KeepaliveSummary),
-    CloudFiles(Vec<CloudFile>),
+    CloudFiles { email: String, files: Vec<CloudFile> },
     Toast { kind: String, text: String },
     Idle,
 }
@@ -97,29 +97,29 @@ impl Bridge {
             Command::UpdateConfig(new) => {
                 cfg = new;
             }
-            Command::ListCloud => {
-                match first_cred(&cfg) {
+            Command::ListCloud { email } => {
+                match cred_for(&cfg, &email) {
                     Some(creds) => match download::list_files(&cfg, &creds).await {
-                        Ok(files) => { let _ = event_tx.send(UiEvent::CloudFiles(files.into_iter().map(CloudFile::from).collect())); }
+                        Ok(files) => { let _ = event_tx.send(UiEvent::CloudFiles { email: email.clone(), files: files.into_iter().map(CloudFile::from).collect() }); }
                         Err(e) => { let _ = event_tx.send(UiEvent::Toast { kind: "error".to_string(), text: format!("{e:#}") }); }
                     },
-                    None => { let _ = event_tx.send(UiEvent::Toast { kind: "error".to_string(), text: "No saved accounts".to_string() }); }
+                    None => { let _ = event_tx.send(UiEvent::Toast { kind: "error".to_string(), text: format!("Could not find saved account {email}") }); }
                 }
             }
-            Command::UploadFile { path } => {
-                match first_cred(&cfg) {
+            Command::UploadFile { path, email } => {
+                match cred_for(&cfg, &email) {
                     Some(creds) => match upload::upload_file(&cfg, &creds, &path, false).await {
                         Ok(result) => {
-                            let _ = event_tx.send(UiEvent::Toast { kind: "success".to_string(), text: format!("Uploaded {}", result.handle) });
-                            if let Ok(files) = download::list_files(&cfg, &creds).await { let _ = event_tx.send(UiEvent::CloudFiles(files.into_iter().map(CloudFile::from).collect())); }
+                            let _ = event_tx.send(UiEvent::Toast { kind: "success".to_string(), text: format!("Uploaded {} to {email}", result.handle) });
+                            if let Ok(files) = download::list_files(&cfg, &creds).await { let _ = event_tx.send(UiEvent::CloudFiles { email: email.clone(), files: files.into_iter().map(CloudFile::from).collect() }); }
                         }
                         Err(e) => { let _ = event_tx.send(UiEvent::Toast { kind: "error".to_string(), text: format!("{e:#}") }); }
                     },
-                    None => { let _ = event_tx.send(UiEvent::Toast { kind: "error".to_string(), text: "No saved accounts".to_string() }); }
+                    None => { let _ = event_tx.send(UiEvent::Toast { kind: "error".to_string(), text: format!("Could not find saved account {email}") }); }
                 }
             }
-            Command::DownloadFile { handle, dest } => {
-                if let Some(creds) = first_cred(&cfg) {
+            Command::DownloadFile { handle, dest, email } => {
+                if let Some(creds) = cred_for(&cfg, &email) {
                     if let Ok(files) = download::list_files(&cfg, &creds).await {
                         if let Some(node) = files.into_iter().find(|f| f.handle == handle) {
                             match download::download_file(&cfg, &creds, &node, &dest).await {
@@ -127,7 +127,7 @@ impl Bridge {
                                 Err(e) => { let _ = event_tx.send(UiEvent::Toast { kind: "error".to_string(), text: format!("{e:#}") }); }
                             }
                         } else {
-                            let _ = event_tx.send(UiEvent::Toast { kind: "error".to_string(), text: format!("File {handle} was not found in the cloud") });
+                            let _ = event_tx.send(UiEvent::Toast { kind: "error".to_string(), text: format!("File {handle} was not found in {email}") });
                         }
                     }
                 }
@@ -213,8 +213,17 @@ fn attach_hook(tx: Sender<UiEvent>) {
     })));
 }
 
-fn first_cred(cfg: &Config) -> Option<crate::models::Credentials> {
-    crate::credentials::load_all(&cfg.encryption_password, &cfg.account_format).into_iter().find(|c| !c.decrypt_failed).map(|c| c.creds)
+/// Resolve the account selected in the Cloud screen. An empty email falls
+/// back to the most recently used account for compatibility with old callers.
+fn cred_for(cfg: &Config, email: &str) -> Option<crate::models::Credentials> {
+    let accounts = crate::credentials::load_all(&cfg.encryption_password, &cfg.account_format);
+    accounts
+        .into_iter()
+        .find(|c| {
+            !c.decrypt_failed
+                && (email.is_empty() || c.creds.email.eq_ignore_ascii_case(email))
+        })
+        .map(|c| c.creds)
 }
 
 fn options_for(cfg: &Config, browser: PathBuf) -> RegisterOptions {

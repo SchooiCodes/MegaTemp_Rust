@@ -99,6 +99,7 @@ pub struct App {
     cloud_files: Vec<CloudFile>,
     cloud_filter: String,
     cloud_sort: u8,
+    cloud_account: String,
     selected_row: usize,
     selected_email: String,
     edit_tags: String,
@@ -138,6 +139,7 @@ impl App {
             cloud_files: Vec::new(),
             cloud_filter: String::new(),
             cloud_sort: 0,
+            cloud_account: String::new(),
             selected_row: 0,
             selected_email: String::new(),
             edit_tags: String::new(),
@@ -148,6 +150,9 @@ impl App {
             folder_name: String::new(),
         };
         app.reload();
+        if app.cloud_account.is_empty() {
+            app.cloud_account = app.rows.first().map(|row| row.email.clone()).unwrap_or_default();
+        }
         app
     }
 
@@ -254,11 +259,15 @@ impl App {
                         format!("Keepalive: {} alive, {} dead", summary.alive, summary.dead),
                     );
                 }
-                UiEvent::CloudFiles(files) => {
-                    self.cloud_files = files;
-                    self.cloud_loaded = true;
-                    self.busy = false;
-                    self.status = None;
+                UiEvent::CloudFiles { email, files } => {
+                    // Ignore a reply for an account the user has since left.
+                    if email == self.cloud_account || self.cloud_account.is_empty() {
+                        self.cloud_account = email;
+                        self.cloud_files = files;
+                        self.cloud_loaded = true;
+                        self.busy = false;
+                        self.status = None;
+                    }
                 }
                 UiEvent::Toast { kind, text } => {
                     self.push_toast(&kind, if kind == "error" { format!("Error: {text}") } else { text });
@@ -336,6 +345,12 @@ impl App {
                 }
             })
             .collect();
+        // A deleted account must not stay selected in the Cloud screen.
+        if !self.rows.iter().any(|row| row.email == self.cloud_account) {
+            self.cloud_account = self.rows.first().map(|row| row.email.clone()).unwrap_or_default();
+            self.cloud_files.clear();
+            self.cloud_loaded = false;
+        }
     }
 
     fn visible_rows(&self) -> Vec<Row> {
@@ -987,21 +1002,23 @@ impl App {
     }
 
     fn cloud_screen(&mut self, ui: &mut egui::Ui) {
-        // Load once when the screen is first opened. The bridge emits
-        // CloudFiles, which fills the list below.
-        if !self.cloud_loaded && !self.busy {
+        // Load the selected account once on first open. Switching accounts
+        // clears cloud_loaded, so the new account is loaded on the next frame.
+        if !self.cloud_loaded && !self.busy && !self.cloud_account.is_empty() {
             self.cloud_loaded = true;
             self.busy = true;
-            self.status = Some("Loading cloud files...".to_string());
-            let _ = self.bridge.commands.send(Command::ListCloud);
+            self.status = Some(format!("Loading cloud files for {}...", self.cloud_account));
+            let _ = self.bridge.commands.send(Command::ListCloud {
+                email: self.cloud_account.clone(),
+            });
         }
         ui.label(RichText::new("Cloud").size(24.0).strong().color(t::TEXT));
         ui.add_space(4.0);
-        let account = self
-            .rows
-            .first()
-            .map(|row| row.email.clone())
-            .unwrap_or_else(|| "no saved account".to_string());
+        let account = if self.cloud_account.is_empty() {
+            "no saved account selected".to_string()
+        } else {
+            self.cloud_account.clone()
+        };
         ui.label(
             RichText::new(format!("Files in {account}"))
                 .size(13.0)
@@ -1009,12 +1026,45 @@ impl App {
         );
         ui.add_space(18.0);
 
-        let files = self.cloud_files.clone();
+        let mut files = self.cloud_files.clone();
         let total: u64 = files.iter().map(|file| file.size).sum();
         let mut refresh_clicked = false;
         let mut upload_clicked = false;
         t::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
+            // Pick which saved account's drive to work on.
+            let accounts: Vec<String> = self.rows.iter().map(|row| row.email.clone()).collect();
+            let before_account = self.cloud_account.clone();
+            let selected_text = if before_account.is_empty() {
+                "Select an account".to_string()
+            } else {
+                before_account.clone()
+            };
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Account").color(t::MUTED));
+                egui::ComboBox::from_id_salt("cloud_account")
+                    .selected_text(selected_text)
+                    .width(340.0)
+                    .show_ui(ui, |ui| {
+                        for email in &accounts {
+                            ui.selectable_value(&mut self.cloud_account, email.clone(), email);
+                        }
+                    });
+                ui.label(
+                    RichText::new("Listing, uploads and downloads use this account")
+                        .size(11.0)
+                        .color(t::FAINT),
+                );
+            });
+            if self.cloud_account != before_account {
+                files.clear();
+                self.cloud_files.clear();
+                self.cloud_loaded = false;
+                self.status = None;
+            }
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.label(
@@ -1053,16 +1103,21 @@ impl App {
         if refresh_clicked && !self.busy {
             self.busy = true;
             self.status = Some("Loading cloud files...".to_string());
-            let _ = self.bridge.commands.send(Command::ListCloud);
+            let _ = self.bridge.commands.send(Command::ListCloud {
+                    email: self.cloud_account.clone(),
+                });
         }
         if upload_clicked && !self.busy {
-            if let Some(path) = rfd::FileDialog::new().pick_file() {
+            if self.cloud_account.is_empty() {
+                self.push_toast("error", "Choose an account before uploading");
+            } else if let Some(path) = rfd::FileDialog::new().pick_file() {
+                let email = self.cloud_account.clone();
                 self.busy = true;
                 self.status = Some(format!(
-                    "Uploading {}...",
+                    "Uploading {} to {email}...",
                     path.file_name().unwrap_or_default().to_string_lossy()
                 ));
-                let _ = self.bridge.commands.send(Command::UploadFile { path });
+                let _ = self.bridge.commands.send(Command::UploadFile { path, email });
             }
         }
         ui.add_space(12.0);
@@ -1221,13 +1276,17 @@ impl App {
             self.push_toast("ok", format!("Copied handle {handle}"));
         }
         if let Some(handle) = download_handle {
-            if let Some(dest) = rfd::FileDialog::new().pick_folder() {
+            if self.cloud_account.is_empty() {
+                self.push_toast("error", "Choose an account before downloading");
+            } else if let Some(dest) = rfd::FileDialog::new().pick_folder() {
+                let email = self.cloud_account.clone();
                 self.busy = true;
-                self.status = Some(format!("Downloading {handle}..."));
-                let _ = self
-                    .bridge
-                    .commands
-                    .send(Command::DownloadFile { handle, dest });
+                self.status = Some(format!("Downloading {handle} from {email}..."));
+                let _ = self.bridge.commands.send(Command::DownloadFile {
+                    handle,
+                    dest,
+                    email,
+                });
             }
         }
     }
@@ -1672,7 +1731,9 @@ impl eframe::App for App {
                 Screen::Cloud => {
                     if !self.busy {
                         self.busy = true;
-                        let _ = self.bridge.commands.send(Command::ListCloud);
+                        let _ = self.bridge.commands.send(Command::ListCloud {
+                    email: self.cloud_account.clone(),
+                });
                     }
                 }
                 Screen::Keepalive => self.start_keepalive(),
