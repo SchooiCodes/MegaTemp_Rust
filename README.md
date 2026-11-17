@@ -149,8 +149,22 @@ round-robin, matching the Python behaviour.
 Multi-character short flags from the Python CLI (`-ka`, `-sh`, `-csv`) are
 normalised before parsing.
 
+## GUI
+
+A native desktop app ships as `megatem-gui` (`target/release/megatem-gui.exe`).
+It reuses the same library and `config.json`, so accounts created in either
+interface show up in the other. The dashboard lists every saved account with
+search, and the Create / Keepalive / Cloud / Accounts / Settings screens
+mirror the CLI: batch creation with per-worker progress, keepalive with quota
+bars, upload and download, reveal/copy passwords, tag and note editing,
+account deletion, folder creation, and a full settings editor.
+
+Run `megatem-gui` (or `cargo run --bin megatem-gui --release`). The window
+opens at 1180x760 and remembers nothing beyond the shared config file.
+
 ## Interactive menu
 
+The CLI still ships its interactive menu for automation-free terminal use;
 `Accounts` → create singles or batches, `Credentials` → browse, edit notes and
 tags, reveal passwords, delete, export, `Account Management` → keepalive,
 storage info, delete account, create folder, `Upload & Cloud` → upload and
