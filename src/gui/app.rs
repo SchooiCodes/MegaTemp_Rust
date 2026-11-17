@@ -316,6 +316,12 @@ impl App {
                     .inner_margin(egui::Margin::symmetric(8, 16)),
             )
             .show(ui, |ui| {
+                // Centre the whole nav group vertically in the rail instead of
+                // pinning it to the top edge.
+                let count = Screen::ALL.len() as f32;
+                let content_height = count * 58.0 + (count - 1.0) * 4.0;
+                let top = ((ui.available_height() - content_height) / 2.0).max(0.0);
+                ui.add_space(top);
                 ui.vertical_centered(|ui| {
                     for screen in Screen::ALL {
                         if nav_button(ui, screen, self.screen == screen).clicked() {
@@ -330,7 +336,7 @@ impl App {
     fn dashboard(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                ui.label(RichText::new("Accounts").heading().strong());
+                ui.label(RichText::new("Accounts").size(24.0).strong().color(t::TEXT));
                 ui.label(
                     RichText::new(format!(
                         "{} saved · {} shown",
@@ -367,10 +373,15 @@ impl App {
         let total = self.rows.len();
         let locked = self.rows.iter().filter(|r| r.locked).count();
         let with_tags = self.rows.iter().filter(|r| !r.tags.is_empty()).count();
-        ui.horizontal(|ui| {
-            stat_card(ui, "Saved accounts", &total.to_string(), t::TEXT);
-            stat_card(ui, "Tagged", &with_tags.to_string(), t::TEXT);
-            stat_card(ui, "Locked files", &locked.to_string(), if locked > 0 { t::WARN } else { t::MUTED });
+        ui.columns(3, |cols| {
+            stat_card(&mut cols[0], "Saved accounts", &total.to_string(), t::TEXT);
+            stat_card(&mut cols[1], "Tagged", &with_tags.to_string(), t::TEXT);
+            stat_card(
+                &mut cols[2],
+                "Locked files",
+                &locked.to_string(),
+                if locked > 0 { t::WARN } else { t::MUTED },
+            );
         });
 
         ui.add_space(18.0);
@@ -685,15 +696,18 @@ impl App {
 
         if let Some((total, alive, dead, pruned)) = self.keep_summary {
             ui.add_space(14.0);
-            ui.horizontal(|ui| {
-                for (label, value, colour) in [
+            ui.columns(4, |cols| {
+                for (index, (label, value, colour)) in [
                     ("Total", total, t::TEXT),
                     ("Alive", alive, t::OK),
                     ("Dead", dead, if dead == 0 { t::OK } else { t::WARN }),
                     ("Pruned", pruned, t::MUTED),
-                ] {
-                    t::card().show(ui, |ui| {
-                        ui.set_width(150.0);
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    t::card().show(&mut cols[index], |ui| {
+                        ui.set_width(ui.available_width());
                         t::section_label(label);
                         ui.label(
                             RichText::new(value.to_string())
@@ -768,8 +782,14 @@ impl App {
     }
 
     fn cloud_screen(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Cloud");
-        ui.label("Files on the most recently used account.");
+        ui.label(RichText::new("Cloud").size(24.0).strong().color(t::TEXT));
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new("Files on the most recently used account.")
+                .size(13.0)
+                .color(t::MUTED),
+        );
+        ui.add_space(18.0);
         ui.horizontal(|ui| {
             if ui.button("Refresh").clicked() && !self.busy {
                 self.busy = true;
@@ -783,23 +803,40 @@ impl App {
             }
         });
         if let Some(status) = &self.status {
-            ui.label(status);
+            ui.add_space(6.0);
+            ui.label(RichText::new(status).size(12.0).color(t::MUTED));
         }
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            egui_extras::TableBuilder::new(ui)
+        ui.add_space(14.0);
+        t::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            if self.cloud_files.is_empty() {
+                ui.add_space(10.0);
+                ui.label(
+                    RichText::new("No files yet. Refresh to list the remote account.")
+                        .size(13.0)
+                        .color(t::MUTED),
+                );
+                ui.add_space(10.0);
+                return;
+            }
+            let table_height = (ui.available_height() - 46.0).max(180.0);
+            TableBuilder::new(ui)
                 .striped(true)
-                .resizable(true)
-                .column(egui_extras::Column::initial(260.0).at_least(180.0))
-                .column(egui_extras::Column::exact(120.0))
-                .column(egui_extras::Column::exact(90.0))
-                .header(28.0, |mut header| {
-                    header.col(|ui| { ui.strong("Name"); });
-                    header.col(|ui| { ui.strong("Handle"); });
-                    header.col(|ui| { ui.strong("Size"); });
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .max_scroll_height(table_height)
+                .column(Column::initial(260.0).at_least(180.0))
+                .column(Column::exact(120.0))
+                .column(Column::remainder().at_least(90.0))
+                .header(30.0, |mut header| {
+                    for title in ["Name", "Handle", "Size"] {
+                        header.col(|ui| {
+                            ui.label(t::section_label(title));
+                        });
+                    }
                 })
                 .body(|mut body| {
                     for file in self.cloud_files.clone() {
-                        body.row(30.0, |mut row| {
+                        body.row(34.0, |mut row| {
                             row.col(|ui| { ui.label(&file.name); });
                             row.col(|ui| { ui.monospace(&file.handle); });
                             row.col(|ui| { ui.label(crate::util::human_size(file.size)); });
@@ -807,15 +844,17 @@ impl App {
                     }
                 });
         });
-        if !self.cloud_files.is_empty() {
-            ui.separator();
-            ui.label("Download a file by handle:");
-
-        }
     }
 
     fn accounts_screen(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Accounts");
+        ui.label(RichText::new("Accounts").size(24.0).strong().color(t::TEXT));
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new("Inspect, edit and manage saved credentials.")
+                .size(13.0)
+                .color(t::MUTED),
+        );
+        ui.add_space(18.0);
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("Filter email or tags"));
             if ui.button("Reload").clicked() {
@@ -831,20 +870,24 @@ impl App {
             self.selected_row = 0;
         }
         ui.columns(2, |cols| {
-            egui::ScrollArea::vertical().show(&mut cols[0], |ui| {
-                for (i, row) in rows.iter().enumerate() {
-                    let selected = i == self.selected_row;
-                    if ui.selectable_label(selected, &row.email).clicked() {
-                        self.selected_row = i;
-                        self.edit_tags = row.tags.clone();
-                        self.edit_notes.clear();
-                        self.reveal_password = false;
-                        self.confirm_delete = false;
+            t::card().show(&mut cols[0], |ui| {
+                ui.set_width(ui.available_width());
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for (i, row) in rows.iter().enumerate() {
+                        let selected = i == self.selected_row;
+                        if ui.selectable_label(selected, &row.email).clicked() {
+                            self.selected_row = i;
+                            self.edit_tags = row.tags.clone();
+                            self.edit_notes.clear();
+                            self.reveal_password = false;
+                            self.confirm_delete = false;
+                        }
                     }
-                }
+                });
             });
             let row = rows[self.selected_row].clone();
-            cols[1].group(|ui| {
+            t::card().show(&mut cols[1], |ui| {
+                ui.set_width(ui.available_width());
                 ui.label(egui::RichText::new(&row.email).strong());
                 ui.label(format!("Age: {}d", row.age_days));
                 if let Some(days) = row.last_login_days {
@@ -920,7 +963,14 @@ impl App {
     }
 
     fn settings_screen(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Settings");
+        ui.label(RichText::new("Settings").size(24.0).strong().color(t::TEXT));
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new("Changes are saved to config.json and shared with the CLI.")
+                .size(13.0)
+                .color(t::MUTED),
+        );
+        ui.add_space(18.0);
         egui::ScrollArea::vertical().show(ui, |ui| {
             egui::Grid::new("settings_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
                 ui.label("Max attempts");
@@ -1150,7 +1200,7 @@ fn draw_icon(painter: &egui::Painter, screen: Screen, c: egui::Pos2, colour: egu
 
 fn stat_card(ui: &mut egui::Ui, label: &str, value: &str, colour: egui::Color32) {
     t::card().show(ui, |ui| {
-        ui.set_width(200.0);
+        ui.set_width(ui.available_width());
         ui.label(t::section_label(label));
         ui.add_space(2.0);
         ui.label(RichText::new(value).size(26.0).color(colour).strong());
