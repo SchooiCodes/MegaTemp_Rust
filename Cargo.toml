@@ -2,9 +2,14 @@
 name = "megatemp"
 version = "1.8.0"
 edition = "2021"
-description = "MegaTemp - bulk MEGA account creator and manager (Rust port)"
+description = "Bulk MEGA account creator and manager with a native GUI — Rust port of MegaTemp"
 license = "GPL-3.0-only"
-repository = "https://github.com/SchooiCodes/MegaTemp"
+repository = "https://github.com/SchooiCodes/MegaTemp_Rust"
+homepage = "https://github.com/SchooiCodes/MegaTemp_Rust#readme"
+readme = "README.md"
+keywords = ["mega", "account-creator", "automation", "egui", "cli"]
+categories = ["command-line-utilities"]
+exclude = ["target/", "credentials/", "config*.json", "loop_state.json"]
 
 [lib]
 name = "megatemp"

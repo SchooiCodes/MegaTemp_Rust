@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to release (for example v1.8.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux GUI build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxkbcommon-dev libwayland-dev libxcb1-dev libasound2-dev
+      - name: Build release binaries
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force staging, artifacts | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/megatemp.exe", "target/${{ matrix.target }}/release/megatemp-gui.exe", README.md, LICENSE, CHANGELOG.md staging
+          Compress-Archive -Path staging/* -DestinationPath "artifacts/megatemp-${{ matrix.target }}.zip"
+      - name: Package (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p staging artifacts
+          cp "target/${{ matrix.target }}/release/megatemp" "target/${{ matrix.target }}/release/megatemp-gui" staging/
+          cp README.md LICENSE CHANGELOG.md staging/
+          tar -czf "artifacts/megatemp-${{ matrix.target }}.tar.gz" -C staging .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: megatemp-${{ matrix.target }}
+          path: artifacts/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: megatemp-*
+          path: artifacts
+          merge-multiple: true
+      - name: List assets
+        run: ls -lh artifacts
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: MegaTemp ${{ github.event.inputs.tag || github.ref_name }}
+          body: |
+            Native GUI and CLI for creating and managing MEGA accounts, with
+            Python-compatible config and credential formats.
+
+            See [CHANGELOG.md](https://github.com/SchooiCodes/MegaTemp_Rust/blob/master/CHANGELOG.md)
+            for the full list of changes. Each archive contains both binaries,
+            the README and the license.
+          files: artifacts/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

@@ -1,7 +1,14 @@
 # MegaTemp (Rust)
 
+[![CI](https://github.com/SchooiCodes/MegaTemp_Rust/actions/workflows/ci.yml/badge.svg)](https://github.com/SchooiCodes/MegaTemp_Rust/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/SchooiCodes/MegaTemp_Rust?display_name=tag)](https://github.com/SchooiCodes/MegaTemp_Rust/releases)
+[![Downloads](https://img.shields.io/github/downloads/SchooiCodes/MegaTemp_Rust/total)](https://github.com/SchooiCodes/MegaTemp_Rust/releases)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)](#install)
+
 A Rust port of [MegaTemp](https://github.com/SchooiCodes/MegaTemp) — a tool for
-bulk-creating and managing MEGA accounts.
+bulk-creating and managing MEGA accounts. Ships as a native GUI app (`megatemp-gui`)
+and a scriptable CLI (`megatemp`) that share the same config and credential formats.
 
 The port keeps the behaviour and the on-disk formats of the Python original, so
 it can be dropped into an existing installation without migrating anything.
@@ -43,7 +50,9 @@ skipped rather than deleted, and `--prune` never removes an encrypted account.
 ### Prebuilt binary
 
 Grab the matching asset from the
-[releases page](https://github.com/SchooiCodes/MegaTemp/releases).
+[releases page](https://github.com/SchooiCodes/MegaTemp_Rust/releases) — each
+release ships Windows (`.zip`) and Linux/macOS (`.tar.gz`) archives containing
+both binaries, the README and the license.
 
 ### From source
 
@@ -160,7 +169,9 @@ bars, upload and download, reveal/copy passwords, tag and note editing,
 account deletion, folder creation, and a full settings editor.
 
 Run `megatemp-gui` (or `cargo run --bin megatemp-gui --release`). The window
-opens at 1180x760 and remembers nothing beyond the shared config file.
+opens maximized (1360x880, minimum 820x560); every screen scrolls, and the
+top-bar button toggles maximize/restore. Settings made in the GUI are written to
+the same `config.json` the CLI reads.
 
 ## Interactive menu
 
@@ -192,9 +203,9 @@ the hashcash challenge automatically when the API returns HTTP 402. Uploads and
 downloads are chunked; downloads stream to a `.part` file and are renamed only
 when complete.
 
-`--isolate` currently runs the workers as asynchronous tasks inside one
-process, the same failure domain as the Python threaded mode; true process
-isolation is not implemented yet.
+`--isolate` runs each parallel worker in its own process, so a browser crash or
+a stuck registration in one worker cannot take the others down. The default
+`-j` mode uses asynchronous tasks in one process.
 
 ## Disk usage
 
@@ -233,13 +244,21 @@ Layout:
 ```
 src/
   cli.rs menu.rs main.rs     CLI surface, interactive menu, dispatch
+  lib.rs                     shared library used by both binaries
+  bin/megatemp-gui.rs        native GUI entry point
+  gui/                       egui app, bridge, theme, screens
   config.rs credentials.rs   config.json and the credential store
   crypto.rs lock.rs disk.rs  field encryption, file locks, cleanup
   mega/                      API client, MEGA crypto, error mapping
   mail/                      mail.tm and Guerrilla Mail
   browser/                   browser detection, CDP client, registration flow
   services/                  keepalive, upload, download, account, export
+tests/cli.rs                 end-to-end CLI tests
 ```
+
+CI runs `cargo test` and a release build on Windows, Linux and macOS on every
+push and pull request. Tagged `v*` releases are built and published
+automatically by the release workflow.
 
 ## Documentation
 
