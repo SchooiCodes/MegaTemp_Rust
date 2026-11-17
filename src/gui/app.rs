@@ -113,6 +113,7 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         t::apply(&cc.egui_ctx);
+        egui_extras::install_image_loaders(&cc.egui_ctx);
         let cfg = config::load(None);
         let mut app = Self {
             create_total: 1,
@@ -367,14 +368,12 @@ impl App {
             )
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
-                    let mark = egui::Frame::new()
-                        .fill(t::ACCENT)
-                        .corner_radius(egui::CornerRadius::same(7))
-                        .inner_margin(egui::Margin::symmetric(8, 5));
-                    mark.show(ui, |ui| {
-                        ui.label(RichText::new("M").size(15.0).color(egui::Color32::WHITE).strong());
-                    });
-                    ui.add_space(4.0);
+                    ui.add(
+                        egui::Image::new(egui::include_image!("../../assets/MegaTemp.png"))
+                            .fit_to_exact_size(egui::vec2(30.0, 30.0)),
+                    )
+                    .on_hover_text("MegaTemp");
+                    ui.add_space(6.0);
                     ui.label(RichText::new("MegaTemp").size(16.0).color(t::TEXT).strong());
                     ui.label(RichText::new(console::VERSION).size(12.0).color(t::FAINT));
 

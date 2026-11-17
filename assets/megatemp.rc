@@ -1,1 +1,2 @@
-1 ICON "assets/megatemp.ico"
+// Windows resource script: embed the MegaTemp logo as the executable icon.
+1 ICON "megatemp.ico"

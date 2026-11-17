@@ -1,7 +1,13 @@
-//! Embed the MegaTemp icon into the Windows executables.
 fn main() {
-    #[cfg(target_os = "windows")]
-    embed_resource::compile("assets/megatemp.rc", embed_resource::NONE)
-        .manifest_optional()
-        .unwrap();
+    // Embed the MegaTemp logo as the Windows icon of both executables.
+    #[cfg(windows)]
+    {
+        let assets = std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap())
+            .join("assets");
+        let _ = embed_resource::compile_for(
+            "assets/megatemp.rc",
+            &["megatemp-gui", "megatemp"],
+            embed_resource::ParamsIncludeDirs(vec![assets]),
+        );
+    }
 }
