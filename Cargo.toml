@@ -47,7 +47,7 @@ num-traits = "0.2"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 crossterm = "0.28"
 sysinfo = "0.33"
-eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts"] }
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "x11", "wayland", "clipboard", "links"] }
 egui_extras = { version = "0.37", features = ["image", "svg"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 rfd = "0.18"
