@@ -20,14 +20,15 @@ use crate::services::alive::{self, AliveResult, KeepaliveSummary};
 /// Work requested by the UI.
 #[derive(Debug)]
 pub enum Command {
-    Create { total: u64, workers: usize },
+    /// Start a batch with the configuration the user chose in the GUI.
+    Create { total: u64, workers: usize, cfg: Config },
     Keepalive { prune: bool },
     UpdateConfig(Config),
     ListCloud,
     UploadFile { path: std::path::PathBuf },
     DownloadFile { handle: String, dest: std::path::PathBuf },
     DeleteAccount { email: String },
-    CreateFolder { name: String },
+    CreateFolder { email: String, name: String },
     InstallChromium,
 }
 
@@ -87,15 +88,14 @@ impl Bridge {
                 let mut cfg = cfg;
                 while let Ok(command) = command_rx.recv() {
                     match command {
-                        Command::Create { total, workers } => {
-                            create_batch(&cfg, total, workers, &event_tx).await;
+                        Command::Create { total, workers, cfg: run_cfg } => {
+                            create_batch(&run_cfg, total, workers, &event_tx).await;
                         }
             Command::Keepalive { prune } => {
                 keepalive(&cfg, prune, &event_tx).await;
             }
             Command::UpdateConfig(new) => {
                 cfg = new;
-                let _ = event_tx.send(UiEvent::Toast { kind: "success".to_string(), text: "Settings saved".to_string() });
             }
             Command::ListCloud => {
                 match first_cred(&cfg) {
@@ -126,6 +126,8 @@ impl Bridge {
                                 Ok(path) => { let _ = event_tx.send(UiEvent::Toast { kind: "success".to_string(), text: format!("Downloaded to {}", path.display()) }); }
                                 Err(e) => { let _ = event_tx.send(UiEvent::Toast { kind: "error".to_string(), text: format!("{e:#}") }); }
                             }
+                        } else {
+                            let _ = event_tx.send(UiEvent::Toast { kind: "error".to_string(), text: format!("File {handle} was not found in the cloud") });
                         }
                     }
                 }
@@ -139,10 +141,11 @@ impl Bridge {
                     }
                 }
             }
-            Command::CreateFolder { name } => {
-                if let Some(creds) = first_cred(&cfg) {
+            Command::CreateFolder { email, name } => {
+                let creds = crate::credentials::load_all(&cfg.encryption_password, &cfg.account_format).into_iter().find(|c| c.creds.email == email && !c.decrypt_failed).map(|c| c.creds);
+                if let Some(creds) = creds {
                     match account::create_folder(&cfg, &creds, &name).await {
-                        Ok(_) => { let _ = event_tx.send(UiEvent::Toast { kind: "success".to_string(), text: format!("Created folder {name}") }); }
+                        Ok(_) => { let _ = event_tx.send(UiEvent::Toast { kind: "success".to_string(), text: format!("Created folder {name} in {email}") }); }
                         Err(e) => { let _ = event_tx.send(UiEvent::Toast { kind: "error".to_string(), text: format!("{e:#}") }); }
                     }
                 }

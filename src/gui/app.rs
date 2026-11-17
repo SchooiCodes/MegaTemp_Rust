@@ -2,8 +2,10 @@
 
 use eframe::egui::{self, RichText};
 use egui_extras::{Column, TableBuilder};
+use std::time::{Duration, Instant};
 
 use crate::gui::bridge::{Bridge, CloudFile, Command, UiEvent};
+use crate::browser::register::resolve_browser;
 use crate::console::Color;
 use crate::gui::theme as t;
 use crate::models::Config;
@@ -31,14 +33,33 @@ impl Screen {
 
     fn label(self) -> &'static str {
         match self {
-            Screen::Dashboard => "Home",
+            Screen::Dashboard => "Overview",
             Screen::Create => "Create",
-            Screen::Keepalive => "Alive",
+            Screen::Keepalive => "Keep alive",
             Screen::Cloud => "Cloud",
-            Screen::Accounts => "People",
+            Screen::Accounts => "Accounts",
             Screen::Settings => "Settings",
         }
     }
+
+    /// One-line explanation shown when hovering the navigation rail.
+    fn description(self) -> &'static str {
+        match self {
+            Screen::Dashboard => "Overview — search saved accounts and open their details",
+            Screen::Create => "Create — register new MEGA accounts in parallel",
+            Screen::Keepalive => "Keep alive — log in to every account and check its storage",
+            Screen::Cloud => "Cloud — browse, upload and download files",
+            Screen::Accounts => "Accounts — edit tags and notes, copy passwords, manage accounts",
+            Screen::Settings => "Settings — configure registration, exports and proxies",
+        }
+    }
+}
+
+/// A short-lived message shown on every screen.
+struct Toast {
+    text: String,
+    kind: String,
+    at: Instant,
 }
 
 /// One account as the dashboard table needs it.
@@ -46,6 +67,7 @@ impl Screen {
 struct Row {
     email: String,
     tags: String,
+    notes: String,
     password: String,
     age_days: i64,
     last_login_days: Option<i64>,
@@ -57,6 +79,7 @@ pub struct App {
     screen: Screen,
     rows: Vec<Row>,
     filter: String,
+    account_filter: String,
     bridge: Bridge,
     create_total: u64,
     create_workers: usize,
@@ -69,9 +92,12 @@ pub struct App {
     prune: bool,
     keep_rows: Vec<(String, bool, Option<f64>, Option<String>)>,
     keep_summary: Option<(usize, usize, usize, usize)>,
-    toast: Option<String>,
+    toasts: Vec<Toast>,
+    help_open: bool,
+    cloud_loaded: bool,
     cloud_files: Vec<CloudFile>,
     selected_row: usize,
+    selected_email: String,
     edit_tags: String,
     edit_notes: String,
     settings: Config,
@@ -93,6 +119,7 @@ impl App {
             screen: Screen::Dashboard,
             rows: Vec::new(),
             filter: String::new(),
+            account_filter: String::new(),
             created: Vec::new(),
             activity: Vec::new(),
             status: None,
@@ -101,9 +128,12 @@ impl App {
             prune: false,
             keep_rows: Vec::new(),
             keep_summary: None,
-            toast: None,
+            toasts: Vec::new(),
+            help_open: false,
+            cloud_loaded: false,
             cloud_files: Vec::new(),
             selected_row: 0,
+            selected_email: String::new(),
             edit_tags: String::new(),
             edit_notes: String::new(),
             settings: cfg.clone(),
@@ -113,6 +143,58 @@ impl App {
         };
         app.reload();
         app
+    }
+
+    /// Show a message on every screen, not just Settings.
+    fn push_toast(&mut self, kind: &str, text: impl Into<String>) {
+        self.toasts.push(Toast { text: text.into(), kind: kind.to_string(), at: Instant::now() });
+        if self.toasts.len() > 4 {
+            self.toasts.remove(0);
+        }
+    }
+
+    fn matching_rows(&self, needle: &str) -> Vec<Row> {
+        let needle = needle.trim().to_lowercase();
+        self.rows
+            .iter()
+            .filter(|row| {
+                needle.is_empty()
+                    || row.email.to_lowercase().contains(&needle)
+                    || row.tags.to_lowercase().contains(&needle)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Open an account from the dashboard in the Accounts screen.
+    fn open_account(&mut self, email: String) {
+        if let Some(index) = self.rows.iter().position(|row| row.email == email) {
+            self.selected_row = index;
+            self.selected_email.clear();
+            self.account_filter.clear();
+            self.screen = Screen::Accounts;
+        }
+    }
+
+    /// Keep the detail form in step with the highlighted row, including after
+    /// a reload or a filter change.
+    fn sync_selection(&mut self) {
+        let rows = self.matching_rows(&self.account_filter.clone());
+        if rows.is_empty() {
+            self.selected_row = 0;
+            return;
+        }
+        if self.selected_row >= rows.len() {
+            self.selected_row = 0;
+        }
+        let row = &rows[self.selected_row];
+        if row.email != self.selected_email {
+            self.selected_email = row.email.clone();
+            self.edit_tags = row.tags.clone();
+            self.edit_notes = row.notes.clone();
+            self.reveal_password = false;
+            self.confirm_delete = false;
+        }
     }
 
     /// Pull everything the worker runtime produced since the last frame.
@@ -140,7 +222,7 @@ impl App {
                 UiEvent::Finished { ok, failed, .. } => {
                     self.busy = false;
                     self.status = None;
-                    self.toast = Some(format!("Run finished: {ok} created, {failed} failed"));
+                    self.push_toast("success", format!("Run finished: {ok} created, {failed} failed"));
                     self.reload();
                 }
                 UiEvent::KeepaliveRow {
@@ -161,20 +243,17 @@ impl App {
                         .collect();
                     self.keep_summary =
                         Some((summary.total, summary.alive, summary.dead, summary.pruned));
-                    self.toast = Some(format!(
-                        "Keepalive: {} alive, {} dead",
-                        summary.alive, summary.dead
-                    ));
+                    self.push_toast(
+                        "success",
+                        format!("Keepalive: {} alive, {} dead", summary.alive, summary.dead),
+                    );
                 }
                 UiEvent::CloudFiles(files) => {
                     self.cloud_files = files;
+                    self.cloud_loaded = true;
                 }
                 UiEvent::Toast { kind, text } => {
-                    self.toast = Some(if kind == "error" {
-                        format!("Error: {text}")
-                    } else {
-                        text
-                    });
+                    self.push_toast(&kind, if kind == "error" { format!("Error: {text}") } else { text });
                 }
                 UiEvent::Idle => {
                     self.busy = false;
@@ -185,24 +264,38 @@ impl App {
     }
 
     fn start_create(&mut self) {
-        self.busy = true;
-        self.progress = Some((0, self.create_total, 0, 0));
         self.created.clear();
         self.activity.clear();
-        self.toast = None;
+        self.toasts.clear();
+        let mut run_cfg = self.cfg.clone();
+        run_cfg.email_provider = self.create_provider.trim().to_string();
+        if run_cfg.email_provider.is_empty() {
+            self.push_toast("error", "Choose an email provider first");
+            return;
+        }
+        if resolve_browser(&run_cfg, None).is_none() {
+            self.push_toast(
+                "error",
+                "No browser found. Install Chromium in Settings or set a browser path.",
+            );
+            return;
+        }
+        self.busy = true;
+        self.progress = Some((0, self.create_total, 0, 0));
         let _ = self.bridge.commands.send(Command::Create {
             total: self.create_total,
             workers: self.create_workers,
+            cfg: run_cfg,
         });
     }
 
     fn start_keepalive(&mut self) {
-        self.busy = true;
         self.status = None;
         self.keep_rows.clear();
         self.keep_summary = None;
         self.activity.clear();
-        self.toast = None;
+        self.toasts.clear();
+        self.busy = true;
         let _ = self
             .bridge
             .commands
@@ -227,6 +320,7 @@ impl App {
                 Row {
                     email: account.creds.email,
                     tags: account.creds.tags,
+                    notes: account.creds.notes,
                     password: account.creds.password,
                     age_days,
                     last_login_days,
@@ -237,16 +331,7 @@ impl App {
     }
 
     fn visible_rows(&self) -> Vec<Row> {
-        let needle = self.filter.trim().to_lowercase();
-        self.rows
-            .iter()
-            .filter(|row| {
-                needle.is_empty()
-                    || row.email.to_lowercase().contains(&needle)
-                    || row.tags.to_lowercase().contains(&needle)
-            })
-            .cloned()
-            .collect()
+        self.matching_rows(&self.filter)
     }
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
@@ -271,6 +356,16 @@ impl App {
                     ui.label(RichText::new(console::VERSION).size(12.0).color(t::FAINT));
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .small_button("?")
+                            .on_hover_text("Quick guide and keyboard shortcuts")
+                            .clicked()
+                        {
+                            self.help_open = true;
+                        }
+                        ui.add_space(10.0);
+                        ui.label(RichText::new(self.screen.label()).size(12.0).color(t::MUTED));
+                        ui.add_space(10.0);
                         let (label, colour) = if self.busy {
                             ("Working", t::ACCENT)
                         } else {
@@ -324,7 +419,9 @@ impl App {
                 ui.add_space(top);
                 ui.vertical_centered(|ui| {
                     for screen in Screen::ALL {
-                        if nav_button(ui, screen, self.screen == screen).clicked() {
+                        let response = nav_button(ui, screen, self.screen == screen);
+                        let response = response.on_hover_text(screen.description());
+                        if response.clicked() {
                             self.screen = screen;
                         }
                         ui.add_space(4.0);
@@ -386,6 +483,7 @@ impl App {
 
         ui.add_space(18.0);
         let visible = self.visible_rows();
+        let mut open_email = None;
         t::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
             if visible.is_empty() {
@@ -435,7 +533,13 @@ impl App {
                     body.rows(34.0, visible.len(), |mut row| {
                         let account = &visible[row.index()];
                         row.col(|ui| {
-                            ui.label(RichText::new(&account.email).monospace().color(t::TEXT));
+                            let button = egui::Button::new(
+                                RichText::new(&account.email).monospace().size(12.0).color(t::TEXT),
+                            )
+                            .frame(false);
+                            if ui.add(button).on_hover_text("Open account details").clicked() {
+                                open_email = Some(account.email.clone());
+                            }
                         });
                         row.col(|ui| {
                             if account.tags.is_empty() {
@@ -465,6 +569,9 @@ impl App {
                     });
                 });
         });
+        if let Some(email) = open_email {
+            self.open_account(email);
+        }
     }
 
     fn create_screen(&mut self, ui: &mut egui::Ui) {
@@ -479,7 +586,7 @@ impl App {
                 ui.add_space(4.0);
                 ui.label(
                     RichText::new(
-                        "Register MEGA accounts with disposable mailboxes. Each worker runs the full browser flow.",
+                        "Register MEGA accounts with disposable mailboxes. Workers run in parallel; attempts retry a failed signup.",
                     )
                     .size(13.0)
                     .color(t::MUTED),
@@ -511,28 +618,32 @@ impl App {
             t::section_label("Batch");
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Accounts").size(13.0).color(t::MUTED));
+                ui.label(RichText::new("Accounts").size(13.0).color(t::MUTED))
+                    .on_hover_text("How many accounts to register in this run.");
                 ui.add(
                     egui::DragValue::new(&mut self.create_total)
                         .range(1..=500)
                         .speed(1.0),
                 );
                 ui.add_space(18.0);
-                ui.label(RichText::new("Workers").size(13.0).color(t::MUTED));
+                ui.label(RichText::new("Workers").size(13.0).color(t::MUTED))
+                    .on_hover_text("Accounts created at the same time; each worker has its own browser.");
                 ui.add(
                     egui::DragValue::new(&mut self.create_workers)
                         .range(1..=32)
                         .speed(1.0),
                 );
                 ui.add_space(18.0);
-                ui.label(RichText::new("Provider").size(13.0).color(t::MUTED));
+                ui.label(RichText::new("Provider").size(13.0).color(t::MUTED))
+                    .on_hover_text("Disposable inbox service used for MEGA's confirmation email.");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.create_provider)
                         .desired_width(150.0)
                         .hint_text("mailtm"),
                 );
                 ui.add_space(18.0);
-                ui.label(RichText::new("Attempts").size(13.0).color(t::MUTED));
+                ui.label(RichText::new("Attempts").size(13.0).color(t::MUTED))
+                    .on_hover_text("Tries per account if a signup fails.");
                 ui.add(egui::DragValue::new(&mut self.cfg.max_attempts).range(1..=20));
             });
             ui.add_space(8.0);
@@ -558,7 +669,31 @@ impl App {
                 ui.add_space(10.0);
                 ui.checkbox(&mut self.cfg.visible_browser, "Show the browser");
             });
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new("Workers run in parallel. Failed signups retry automatically; tick Show the browser to watch the registration happen.")
+                    .size(11.0)
+                    .color(t::FAINT),
+            );
         });
+
+        if self.progress.is_none() && !self.busy {
+            ui.add_space(14.0);
+            t::card().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.vertical_centered(|ui| {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new("Ready when you are").size(14.0).strong().color(t::TEXT));
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("Choose the batch size and press Start run. Each account gets its own disposable inbox and browser.")
+                            .size(12.0)
+                            .color(t::MUTED),
+                    );
+                    ui.add_space(6.0);
+                });
+            });
+        }
 
         if let Some((done, total, ok, failed)) = self.progress {
             ui.add_space(14.0);
@@ -628,6 +763,7 @@ impl App {
                         .size(12.0)
                         .color(t::MUTED),
                 )
+                .default_open(self.busy)
                 .show(ui, |ui| {
                     egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
                         for (line, colour) in &self.activity {
@@ -686,12 +822,19 @@ impl App {
         t::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.checkbox(&mut self.prune, "Remove dead accounts");
+                ui.checkbox(&mut self.prune, "Remove dead accounts")
+                    .on_hover_text("Dead accounts are moved to credentials/pruned/ before deletion.");
                 ui.add_space(12.0);
                 if let Some(status) = &self.status {
                     ui.label(RichText::new(status).size(12.0).color(t::MUTED));
                 }
             });
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("Every saved account is logged in and its free storage is read. This does not create or delete files.")
+                    .size(11.0)
+                    .color(t::FAINT),
+            );
         });
 
         if let Some((total, alive, dead, pruned)) = self.keep_summary {
@@ -856,12 +999,15 @@ impl App {
         );
         ui.add_space(18.0);
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("Filter email or tags"));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.account_filter)
+                    .hint_text("Find email or tags"),
+            );
             if ui.button("Reload").clicked() {
                 self.reload();
             }
         });
-        let rows = self.visible_rows();
+        let rows = self.matching_rows(&self.account_filter.clone());
         if rows.is_empty() {
             ui.label("No accounts saved yet.");
             return;
@@ -877,8 +1023,9 @@ impl App {
                         let selected = i == self.selected_row;
                         if ui.selectable_label(selected, &row.email).clicked() {
                             self.selected_row = i;
+                            self.selected_email = row.email.clone();
                             self.edit_tags = row.tags.clone();
-                            self.edit_notes.clear();
+                            self.edit_notes = row.notes.clone();
                             self.reveal_password = false;
                             self.confirm_delete = false;
                         }
@@ -911,7 +1058,11 @@ impl App {
                     }
                     if ui.small_button("Copy").clicked() {
                         let _ = crate::util::copy_to_clipboard(&row.password);
-                        self.toast = Some("Password copied".to_string());
+                        self.push_toast("ok", "Password copied");
+                    }
+                    if ui.small_button("Copy email").clicked() {
+                        let _ = crate::util::copy_to_clipboard(&row.email);
+                        self.push_toast("ok", "Email copied");
                     }
                 });
                 ui.separator();
@@ -919,16 +1070,19 @@ impl App {
                 ui.text_edit_singleline(&mut self.edit_tags);
                 ui.label("Notes:");
                 ui.text_edit_multiline(&mut self.edit_notes);
-                if ui.button("Save tags").clicked() {
+                if ui.button("Save tags & notes").clicked() {
                     // persist via credentials update
                     if let Some(account) = crate::credentials::load_all(&self.cfg.encryption_password, &self.cfg.account_format)
                         .into_iter().find(|a| a.creds.email == row.email) {
                         let mut creds = account.creds;
                         creds.tags = self.edit_tags.clone();
                         creds.notes = self.edit_notes.clone();
-                        let _ = crate::credentials::update_credential(&creds.email, &creds, &self.cfg);
+                        if crate::credentials::update_credential(&creds.email, &creds, &self.cfg).is_ok() {
+                            self.push_toast("ok", "Tags and notes saved");
+                        } else {
+                            self.push_toast("error", "Could not save this account");
+                        }
                         self.reload();
-                        self.toast = Some("Saved".to_string());
                     }
                 }
                 ui.separator();
@@ -936,17 +1090,24 @@ impl App {
                     ui.text_edit_singleline(&mut self.folder_name);
                     if ui.button("Create folder").clicked() && !self.folder_name.trim().is_empty() {
                         let name = self.folder_name.clone();
-                        let _ = self.bridge.commands.send(Command::CreateFolder { name });
+                        let _ = self.bridge.commands.send(Command::CreateFolder {
+                            email: row.email.clone(),
+                            name,
+                        });
                         self.folder_name.clear();
                     }
                 });
                 ui.separator();
                 if !self.confirm_delete {
-                    if ui.button(egui::RichText::new("Delete account").color(egui::Color32::from_rgb(255, 91, 96))).clicked() {
+                    if ui.button(egui::RichText::new("Delete account").color(t::DANGER)).clicked() {
                         self.confirm_delete = true;
                     }
                 } else {
-                    ui.label("Are you sure?");
+                    ui.label(
+                        RichText::new(format!("Delete {}? This removes the saved credentials and account data.", row.email))
+                            .size(12.0)
+                            .color(t::DANGER),
+                    );
                     ui.horizontal(|ui| {
                         if ui.button("Yes, delete").clicked() {
                             let _ = self.bridge.commands.send(Command::DeleteAccount { email: row.email.clone() });
