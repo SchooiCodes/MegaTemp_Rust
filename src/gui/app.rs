@@ -1309,10 +1309,19 @@ impl App {
                     }
                 });
                 ui.separator();
-                ui.label("Tags:");
-                ui.text_edit_singleline(&mut self.edit_tags);
-                ui.label("Notes:");
-                ui.text_edit_multiline(&mut self.edit_notes);
+                ui.label("Tags:").on_hover_text("Labels for filtering this account, e.g. fresh, paid");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.edit_tags)
+                        .hint_text("e.g. fresh, reserved")
+                        .desired_width(320.0),
+                );
+                ui.label("Notes:").on_hover_text("Free-form notes saved with the credential");
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.edit_notes)
+                        .hint_text("Anything worth remembering about this account")
+                        .desired_width(320.0)
+                        .desired_rows(3),
+                );
                 if ui.button("Save tags & notes").clicked() {
                     // persist via credentials update
                     if let Some(account) = crate::credentials::load_all(&self.cfg.encryption_password, &self.cfg.account_format)
@@ -1330,7 +1339,12 @@ impl App {
                 }
                 ui.separator();
                 ui.horizontal(|ui| {
-                    ui.text_edit_singleline(&mut self.folder_name);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.folder_name)
+                            .hint_text("New folder name")
+                            .desired_width(180.0),
+                    )
+                    .on_hover_text("Create this folder in the selected account's MEGA drive");
                     if ui.button("Create folder").clicked() && !self.folder_name.trim().is_empty() {
                         let name = self.folder_name.clone();
                         let _ = self.bridge.commands.send(Command::CreateFolder {
@@ -1379,23 +1393,31 @@ impl App {
             t::card().show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(t::section_label("Registration"));
+                ui.label(
+                    RichText::new("Used when creating accounts. Changes apply to new runs.")
+                        .size(11.0)
+                        .color(t::FAINT),
+                );
                 egui::Grid::new("settings_registration").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-                    ui.label("Email provider");
-                    ui.text_edit_singleline(&mut self.settings.email_provider);
+                    ui.label("Email provider").on_hover_text("Temporary mail service: mailtm, guerrillamail or mailgw.");
+                    ui.add(egui::TextEdit::singleline(&mut self.settings.email_provider)
+                        .hint_text("mailtm / guerrillamail"));
                     ui.end_row();
-                    ui.label("Max attempts");
+                    ui.label("Max attempts").on_hover_text("Registration attempts per account (1-10).");
                     ui.add(egui::DragValue::new(&mut self.settings.max_attempts).range(1..=10));
                     ui.end_row();
-                    ui.label("Mail timeout (s)");
+                    ui.label("Mail timeout (s)").on_hover_text("How long to wait for the verification email, in seconds (30-600).");
                     ui.add(egui::DragValue::new(&mut self.settings.mail_timeout).range(30..=600));
                     ui.end_row();
-                    ui.label("Visible browser");
+                    ui.label("Visible browser").on_hover_text("Show the registration browser instead of running it headless.");
                     ui.checkbox(&mut self.settings.visible_browser, "");
                     ui.end_row();
-                    ui.label("Browser path");
+                    ui.label("Browser path").on_hover_text("Full path to Chrome/Edge/Brave; leave empty to auto-detect.");
                     ui.horizontal(|ui| {
-                        ui.text_edit_singleline(&mut self.settings.executable_path);
-                        if ui.button("Browse...").clicked() {
+                        ui.add(egui::TextEdit::singleline(&mut self.settings.executable_path)
+                            .hint_text("Auto-detect if empty")
+                            .desired_width(280.0));
+                        if ui.button("Browse...").on_hover_text("Pick the browser executable.").clicked() {
                             if let Some(path) = rfd::FileDialog::new().add_filter("Browser", &["exe"]).pick_file() {
                                 self.settings.executable_path = path.to_string_lossy().to_string();
                             }
@@ -1408,15 +1430,21 @@ impl App {
             t::card().show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(t::section_label("Exports"));
+                ui.label(
+                    RichText::new("Choose how saved accounts are written alongside credentials/*.json.")
+                        .size(11.0)
+                        .color(t::FAINT),
+                );
                 egui::Grid::new("settings_exports").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-                    ui.label("Auto CSV export");
+                    ui.label("Auto CSV export").on_hover_text("Append each created account to accounts.csv.");
                     ui.checkbox(&mut self.settings.csv_export, "");
                     ui.end_row();
-                    ui.label("Auto JSONL export");
+                    ui.label("Auto JSONL export").on_hover_text("Append each created account to accounts.jsonl.");
                     ui.checkbox(&mut self.settings.jsonl_export, "");
                     ui.end_row();
-                    ui.label("Account format");
-                    ui.text_edit_singleline(&mut self.settings.account_format);
+                    ui.label("Account format").on_hover_text("Template for accounts.txt lines. Use {email}, {password}, {emailPassword}.");
+                    ui.add(egui::TextEdit::singleline(&mut self.settings.account_format)
+                        .hint_text("{email}#{password}"));
                     ui.end_row();
                 });
             });
@@ -1424,20 +1452,28 @@ impl App {
             t::card().show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(t::section_label("Network & updates"));
+                ui.label(
+                    RichText::new("Optional: route MEGA and mail traffic through proxies.")
+                        .size(11.0)
+                        .color(t::FAINT),
+                );
                 egui::Grid::new("settings_network").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-                    ui.label("Proxy");
-                    ui.text_edit_singleline(&mut self.settings.proxy);
+                    ui.label("Proxy").on_hover_text("A single proxy URL, e.g. http://host:port or socks5://host:port.");
+                    ui.add(egui::TextEdit::singleline(&mut self.settings.proxy)
+                        .hint_text("http://host:port (optional)"));
                     ui.end_row();
-                    ui.label("Proxy file");
-                    ui.text_edit_singleline(&mut self.settings.proxy_file);
+                    ui.label("Proxy file").on_hover_text("Text file with one proxy URL per line; used instead of Proxy above.");
+                    ui.add(egui::TextEdit::singleline(&mut self.settings.proxy_file)
+                        .hint_text("proxies.txt (optional)"));
                     ui.end_row();
-                    ui.label("Proxy per attempt");
+                    ui.label("Proxy per attempt").on_hover_text("Rotate to the next proxy for every registration attempt.");
                     ui.checkbox(&mut self.settings.proxy_per_attempt, "");
                     ui.end_row();
-                    ui.label("Webhook URL");
-                    ui.text_edit_singleline(&mut self.settings.webhook_url);
+                    ui.label("Webhook URL").on_hover_text("Optional URL that receives a POST when a run finishes.");
+                    ui.add(egui::TextEdit::singleline(&mut self.settings.webhook_url)
+                        .hint_text("https://... (optional)"));
                     ui.end_row();
-                    ui.label("Notifications / quiet");
+                    ui.label("Notifications / quiet").on_hover_text("Suppress desktop notifications and non-essential output.");
                     ui.checkbox(&mut self.settings.quiet, "");
                     ui.end_row();
                 });
@@ -1446,19 +1482,27 @@ impl App {
             t::card().show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(t::section_label("Security & credentials"));
+                ui.label(
+                    RichText::new("Protect saved credentials and manage the local browser.")
+                        .size(11.0)
+                        .color(t::FAINT),
+                );
                 egui::Grid::new("settings_security").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-                    ui.label("Encryption password");
-                    ui.add(egui::TextEdit::singleline(&mut self.settings.encryption_password).password(true));
+                    ui.label("Encryption password").on_hover_text("Password used to open ENC2/legacy encrypted credential files. Leave empty for plaintext JSON.");
+                    ui.add(egui::TextEdit::singleline(&mut self.settings.encryption_password)
+                        .password(true)
+                        .hint_text("Optional credential password"));
                     ui.end_row();
                 });
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let install = ui.add_enabled(!self.busy, egui::Button::new("Install Chromium"));
+                    let install = ui.add_enabled(!self.busy, egui::Button::new("Install Chromium"))
+                        .on_hover_text("Download a private Chrome for Testing build for headless registration.");
                     if install.clicked() {
                         self.busy = true;
                         let _ = self.bridge.commands.send(Command::InstallChromium);
                     }
-                    if ui.button("Export credentials").clicked() {
+                    if ui.button("Export credentials").on_hover_text("Write credentials.txt in the current directory.").clicked() {
                         match crate::services::extract::extract_credentials(&self.settings, &self.settings.account_format) {
                             Ok(path) => self.push_toast("ok", format!("Exported to {}", path.display())),
                             Err(e) => self.push_toast("error", format!("Export failed: {e}")),
