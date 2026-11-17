@@ -7,8 +7,9 @@
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)](#install)
 
 A Rust port of [MegaTemp](https://github.com/SchooiCodes/MegaTemp) — a tool for
-bulk-creating and managing MEGA accounts. Ships as a native GUI app (`megatemp-gui`)
-and a scriptable CLI (`megatemp`) that share the same config and credential formats.
+bulk-creating and managing MEGA accounts. A single `megatemp` binary is both a
+native GUI app (the default with no arguments) and a scriptable CLI; all flags
+from the Python original still work.
 
 The port keeps the behaviour and the on-disk formats of the Python original, so
 it can be dropped into an existing installation without migrating anything.
@@ -50,9 +51,10 @@ skipped rather than deleted, and `--prune` never removes an encrypted account.
 ### Prebuilt binary
 
 Grab the matching asset from the
-[releases page](https://github.com/SchooiCodes/MegaTemp_Rust/releases) — each
-release ships Windows (`.zip`) and Linux/macOS (`.tar.gz`) archives containing
-both binaries, the README and the license.
+[releases page](https://github.com/SchooiCodes/MegaTemp_Rust/releases). Each
+release ships standalone binaries (`megatemp-windows-x86_64.exe`,
+`megatemp-linux-x86_64`, `megatemp-macos-aarch64`) plus `.zip` / `.tar.gz`
+archives containing the binary, the README and the license.
 
 ### From source
 
@@ -70,10 +72,10 @@ tools.
 megatemp
 ```
 
-With no arguments the interactive menu opens. Choose *Create Accounts* and the
+With no arguments the native GUI opens. Choose *Create* and the app will find an
 program will find an installed Chromium-based browser, create a throwaway
 mailbox, walk MEGA's registration form, confirm the email, and save the account
-to `credentials/`.
+to `credentials/`. Use `megatemp --menu` for the classic terminal menu.
 
 If no browser is found you are prompted for a path; it is remembered in
 `config.json`.
@@ -152,15 +154,17 @@ round-robin, matching the Python behaviour.
 ### Output, security and maintenance
 
 `-y/--yes`, `-v/--verbose`, `--quiet`, `--profile`, `--encryption-password`,
-`--webhook-url`, `--notify`, `--disk-usage`, `--clean`, `--update`, `--help`,
-`--version`.
+`--webhook-url`, `--notify`, `--disk-usage`, `--clean`, `--update`, `--gui`,
+`--menu`, `--help`, `--version`.
 
 Multi-character short flags from the Python CLI (`-ka`, `-sh`, `-csv`) are
 normalised before parsing.
 
 ## GUI
 
-A native desktop app ships as `megatemp-gui` (`target/release/megatemp-gui.exe`).
+The graphical interface is the default `megatemp` binary
+(`target/release/megatemp.exe` on Windows). Run it with no arguments (or with
+`--gui`); `cargo run --release` starts it too.
 It reuses the same library and `config.json`, so accounts created in either
 interface show up in the other. The dashboard lists every saved account with
 search, and the Create / Keepalive / Cloud / Accounts / Settings screens
@@ -168,15 +172,15 @@ mirror the CLI: batch creation with per-worker progress, keepalive with quota
 bars, upload and download, reveal/copy passwords, tag and note editing,
 account deletion, folder creation, and a full settings editor.
 
-Run `megatemp-gui` (or `cargo run --bin megatemp-gui --release`). The window
+Run it with no arguments (or `--gui`, or `cargo run --release`). The window
 opens maximized (1360x880, minimum 820x560); every screen scrolls, and the
 top-bar button toggles maximize/restore. Settings made in the GUI are written to
 the same `config.json` the CLI reads.
 
 ## Interactive menu
 
-The CLI still ships its interactive menu for automation-free terminal use;
-`Accounts` → create singles or batches, `Credentials` → browse, edit notes and
+The CLI still ships its interactive menu for automation-free terminal use; open
+it with `megatemp --menu`. `Accounts` → create singles or batches, `Credentials` → browse, edit notes and
 tags, reveal passwords, delete, export, `Account Management` → keepalive,
 storage info, delete account, create folder, `Upload & Cloud` → upload and
 download, `Settings` → attempts, visible browser, exports, password generator,
@@ -244,9 +248,9 @@ Layout:
 ```
 src/
   cli.rs menu.rs main.rs     CLI surface, interactive menu, dispatch
-  lib.rs                     shared library used by both binaries
-  bin/megatemp-gui.rs        native GUI entry point
-  gui/                       egui app, bridge, theme, screens
+  lib.rs                     shared library for the CLI and GUI
+  main.rs                    one binary: GUI by default, CLI with flags
+  gui/                       egui app, bridge, theme, screens, launch code
   config.rs credentials.rs   config.json and the credential store
   crypto.rs lock.rs disk.rs  field encryption, file locks, cleanup
   mega/                      API client, MEGA crypto, error mapping

@@ -28,7 +28,7 @@ fn version_matches_the_python_release() {
     let output = run(dir.path(), &["--version"]);
     assert!(output.status.success());
     let text = stdout(&output);
-    assert!(text.contains("1.8.0"), "unexpected version output: {text}");
+    assert!(text.contains("2.0.0"), "unexpected version output: {text}");
 }
 
 #[test]
@@ -37,7 +37,7 @@ fn help_documents_the_main_flags() {
     let output = run(dir.path(), &["--help"]);
     assert!(output.status.success());
     let text = stdout(&output);
-    for flag in ["--keepalive", "--loop", "--parallel", "--prune", "--extract"] {
+    for flag in ["--keepalive", "--loop", "--parallel", "--prune", "--extract", "--gui", "--menu"] {
         assert!(text.contains(flag), "help is missing {flag}");
     }
 }

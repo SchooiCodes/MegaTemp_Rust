@@ -1,8 +1,9 @@
 # GUI guide
 
-`megatemp-gui` is a native egui/eframe app that uses the same library and
-`config.json` as the CLI. It starts maximized; every screen scrolls, and the
-top-bar button toggles maximize/restore.
+`megatemp` is a native egui/eframe app when launched with no arguments; it uses
+the same library and `config.json` as the CLI. Any CLI flag selects the CLI
+instead, and `--gui` forces the GUI. It starts maximized; every screen scrolls,
+and the top-bar button toggles maximize/restore.
 
 ## Screens
 

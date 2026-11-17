@@ -4,11 +4,17 @@ use std::path::PathBuf;
 #[derive(Parser, Debug, Clone)]
 #[command(
     name = "megatemp",
-    version = "v1.8.0",
-    about = "Bulk MEGA account creator and manager",
-    after_help = "Examples:\n  megatemp                       Open the interactive menu\n  megatemp -a 4 -sh               Create one account visibly\n  megatemp -l 10 -j 4             Create 10 accounts with 4 workers\n  megatemp --keepalive --prune -y Check accounts and prune dead ones\n  megatemp --export-bitwarden     Export all accounts to Bitwarden CSV"
+    version = "v2.0.0",
+    about = "Bulk MEGA account creator and manager (GUI by default)",
+    after_help = "Examples:\n  megatemp                       Open the graphical interface\n  megatemp --menu                Open the interactive terminal menu\n  megatemp -a 4 -sh               Create one account visibly\n  megatemp -l 10 -j 4             Create 10 accounts with 4 workers\n  megatemp --keepalive --prune -y Check accounts and prune dead ones\n  megatemp --export-bitwarden     Export all accounts to Bitwarden CSV"
 )]
 pub struct Cli {
+    /// Launch the native graphical interface (the default with no arguments)
+    #[arg(long)]
+    pub gui: bool,
+    /// Open the interactive terminal menu instead of the GUI
+    #[arg(long)]
+    pub menu: bool,
     /// Registration attempts per provider
     #[arg(short = 'a', long, default_value_t = 4)]
     pub attempts: u32,

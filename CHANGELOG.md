@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-11-18
+### Added
+- Standalone platform binaries are now attached to GitHub releases alongside
+  the archives.
+- `--gui` explicitly launches the GUI; `--menu` opens the classic terminal menu.
+### Changed
+- **Breaking:** the separate `megatemp-gui` executable is gone. The single
+  `megatemp` binary launches the graphical interface with no arguments and
+  accepts every CLI flag when arguments are present.
+- On Windows the unified binary hides its console only in GUI mode, so CLI
+  output still works.
 ## [1.8.0] - 2026-11-18
 
 ### Added
@@ -32,4 +43,5 @@ All notable changes to this project are documented here. The format is based on
 - Parallel worker output is grouped per account instead of interleaved.
 - Live keepalive reports accounts as alive instead of incorrectly marking them dead.
 
+[2.0.0]: https://github.com/SchooiCodes/MegaTemp_Rust/releases/tag/v2.0.0
 [1.8.0]: https://github.com/SchooiCodes/MegaTemp_Rust/releases/tag/v1.8.0

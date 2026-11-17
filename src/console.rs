@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-pub const VERSION: &str = "v1.8.0";
+pub const VERSION: &str = "v2.0.0";
 pub const RELEASES_URL: &str = "https://api.github.com/repos/SchooiCodes/MegaTemp/releases";
 
 /// A structured progress event.

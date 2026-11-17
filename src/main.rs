@@ -7,8 +7,8 @@
 #![allow(dead_code)]
 
 use megatemp::{
-    browser, cli, config, console, credentials, disk, mail, menu, models, proxy, services, update,
-    util,
+    browser, cli, config, console, credentials, disk, gui, mail, menu, models, proxy, services,
+    update, util,
 };
 
 use anyhow::{bail, Result};
@@ -24,14 +24,49 @@ use cli::Cli;
 use console::{p_print, separator, Color};
 use models::Credentials;
 
-#[tokio::main]
-async fn main() {
-    let cli = Cli::parse_from(cli::normalize_args());
-    if let Err(e) = run(cli).await {
-        p_print(&format!("Error: {e:#}"), Color::Fail);
-        std::process::exit(1);
+fn main() {
+    let args = cli::normalize_args();
+    // The GUI is the default experience. Any CLI flag keeps the full scriptable
+    // interface, and `--gui` forces the GUI even when other flags are present.
+    if args.len() == 1 || args.iter().any(|arg| arg == "--gui") {
+        prepare_gui_console();
+        if let Err(e) = gui::launch() {
+            eprintln!("Failed to start the MegaTemp GUI: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let cli = Cli::parse_from(args);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build the Tokio runtime");
+    runtime.block_on(async {
+        if let Err(e) = run(cli).await {
+            p_print(&format!("Error: {e:#}"), Color::Fail);
+            std::process::exit(1);
+        }
+    });
+}
+
+/// On Windows a console-subsystem binary gets a console window when launched
+/// from Explorer. Hide and detach it before starting the GUI; CLI invocations
+/// keep their console so their output still works.
+#[cfg(windows)]
+fn prepare_gui_console() {
+    use windows_sys::Win32::System::Console::{FreeConsole, GetConsoleWindow};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+    unsafe {
+        let console = GetConsoleWindow();
+        if !console.is_null() {
+            ShowWindow(console, SW_HIDE);
+        }
+        FreeConsole();
     }
 }
+
+#[cfg(not(windows))]
+fn prepare_gui_console() {}
 
 async fn run(cli: Cli) -> Result<()> {
     if cli.json && !cli.health {
@@ -360,6 +395,16 @@ async fn run(cli: Cli) -> Result<()> {
         )
         .await?;
         return Ok(());
+    }
+
+    if cli.menu {
+        update::auto_update().await;
+        let mut menu = menu::Menu {
+            cfg,
+            profile: cli.profile.clone(),
+            browser,
+        };
+        return menu.run().await;
     }
 
     let single = cli.file.is_some()

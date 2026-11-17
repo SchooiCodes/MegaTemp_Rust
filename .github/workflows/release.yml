@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to release (for example v1.8.0)'
+        description: 'Existing tag to release (for example v2.0.0)'
         required: true
         type: string
 
@@ -23,10 +23,16 @@ jobs:
         include:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            binary: megatemp.exe
+            asset: megatemp-windows-x86_64.exe
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            binary: megatemp
+            asset: megatemp-linux-x86_64
           - os: macos-latest
             target: aarch64-apple-darwin
+            binary: megatemp
+            asset: megatemp-macos-aarch64
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,14 +53,16 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force staging, artifacts | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/megatemp.exe", "target/${{ matrix.target }}/release/megatemp-gui.exe", README.md, LICENSE, CHANGELOG.md staging
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary }}", README.md, LICENSE, CHANGELOG.md staging
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary }}" "artifacts/${{ matrix.asset }}"
           Compress-Archive -Path staging/* -DestinationPath "artifacts/megatemp-${{ matrix.target }}.zip"
       - name: Package (Linux/macOS)
         if: runner.os != 'Windows'
         shell: bash
         run: |
           mkdir -p staging artifacts
-          cp "target/${{ matrix.target }}/release/megatemp" "target/${{ matrix.target }}/release/megatemp-gui" staging/
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" staging/
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "artifacts/${{ matrix.asset }}"
           cp README.md LICENSE CHANGELOG.md staging/
           tar -czf "artifacts/megatemp-${{ matrix.target }}.tar.gz" -C staging .
       - uses: actions/upload-artifact@v4
@@ -88,8 +96,9 @@ jobs:
             Python-compatible config and credential formats.
 
             See [CHANGELOG.md](https://github.com/SchooiCodes/MegaTemp_Rust/blob/master/CHANGELOG.md)
-            for the full list of changes. Each archive contains both binaries,
-            the README and the license.
+            for the full list of changes. Each archive contains the `megatemp`
+            binary, the README and the license; standalone binaries are also
+            attached with platform-specific names.
           files: artifacts/*
           generate_release_notes: true
           fail_on_unmatched_files: true

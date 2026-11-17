@@ -1,8 +1,8 @@
 # MegaTemp (Rust)
 
 MegaTemp is a bulk MEGA account creator and manager. This repository contains the
-Rust port: a native GUI (`megatemp-gui`) and a scriptable CLI (`megatemp`) that
-share one library, one `config.json` and one credential store.
+Rust port: a single `megatemp` binary that is both a native GUI and a
+scriptable CLI, sharing one library, one `config.json` and one credential store.
 
 - [Source code](https://github.com/SchooiCodes/MegaTemp_Rust)
 - [Releases](https://github.com/SchooiCodes/MegaTemp_Rust/releases)
@@ -15,7 +15,9 @@ share one library, one `config.json` and one credential store.
 
 1. Download the archive for your platform from
    [Releases](https://github.com/SchooiCodes/MegaTemp_Rust/releases) and extract it.
-2. Run `megatemp-gui` for the desktop app, or `megatemp` for the CLI/menu.
+2. Run `megatemp` for the desktop app; add CLI flags for scripted work, or use
+   `megatemp --menu` for the classic terminal menu. Standalone binaries and
+   archives are both attached to each release.
 3. The first account needs a Chromium-based browser (Chrome, Edge, Brave or
    Chromium). If none is detected, set the path in Settings or pass `--browser`.
 
