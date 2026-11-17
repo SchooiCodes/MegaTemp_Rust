@@ -3,8 +3,8 @@
 use eframe::egui::{self, RichText};
 use egui_extras::{Column, TableBuilder};
 
+use crate::gui::bridge::{Bridge, CloudFile, Command, UiEvent};
 use crate::console::Color;
-use crate::gui::bridge::{Bridge, Command, UiEvent};
 use crate::gui::theme as t;
 use crate::models::Config;
 use crate::{config, credentials, console};
@@ -70,6 +70,14 @@ pub struct App {
     keep_rows: Vec<(String, bool, Option<f64>, Option<String>)>,
     keep_summary: Option<(usize, usize, usize, usize)>,
     toast: Option<String>,
+    cloud_files: Vec<CloudFile>,
+    selected_row: usize,
+    edit_tags: String,
+    edit_notes: String,
+    settings: Config,
+    reveal_password: bool,
+    confirm_delete: bool,
+    folder_name: String,
 }
 
 impl App {
@@ -81,7 +89,7 @@ impl App {
             create_workers: 1,
             create_provider: cfg.email_provider.clone(),
             bridge: Bridge::start(cfg.clone()),
-            cfg,
+            cfg: cfg.clone(),
             screen: Screen::Dashboard,
             rows: Vec::new(),
             filter: String::new(),
@@ -94,6 +102,14 @@ impl App {
             keep_rows: Vec::new(),
             keep_summary: None,
             toast: None,
+            cloud_files: Vec::new(),
+            selected_row: 0,
+            edit_tags: String::new(),
+            edit_notes: String::new(),
+            settings: cfg.clone(),
+            reveal_password: false,
+            confirm_delete: false,
+            folder_name: String::new(),
         };
         app.reload();
         app
@@ -149,6 +165,9 @@ impl App {
                         "Keepalive: {} alive, {} dead",
                         summary.alive, summary.dead
                     ));
+                }
+                UiEvent::CloudFiles(files) => {
+                    self.cloud_files = files;
                 }
                 UiEvent::Toast { kind, text } => {
                     self.toast = Some(if kind == "error" {
@@ -748,6 +767,220 @@ impl App {
         });
     }
 
+    fn cloud_screen(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Cloud");
+        ui.label("Files on the most recently used account.");
+        ui.horizontal(|ui| {
+            if ui.button("Refresh").clicked() && !self.busy {
+                self.busy = true;
+                let _ = self.bridge.commands.send(Command::ListCloud);
+            }
+            if ui.button("Upload file").clicked() && !self.busy {
+                if let Some(path) = rfd::FileDialog::new().pick_file() {
+                    self.busy = true;
+                    let _ = self.bridge.commands.send(Command::UploadFile { path });
+                }
+            }
+        });
+        if let Some(status) = &self.status {
+            ui.label(status);
+        }
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            egui_extras::TableBuilder::new(ui)
+                .striped(true)
+                .resizable(true)
+                .column(egui_extras::Column::initial(260.0).at_least(180.0))
+                .column(egui_extras::Column::exact(120.0))
+                .column(egui_extras::Column::exact(90.0))
+                .header(28.0, |mut header| {
+                    header.col(|ui| { ui.strong("Name"); });
+                    header.col(|ui| { ui.strong("Handle"); });
+                    header.col(|ui| { ui.strong("Size"); });
+                })
+                .body(|mut body| {
+                    for file in self.cloud_files.clone() {
+                        body.row(30.0, |mut row| {
+                            row.col(|ui| { ui.label(&file.name); });
+                            row.col(|ui| { ui.monospace(&file.handle); });
+                            row.col(|ui| { ui.label(crate::util::human_size(file.size)); });
+                        });
+                    }
+                });
+        });
+        if !self.cloud_files.is_empty() {
+            ui.separator();
+            ui.label("Download a file by handle:");
+
+        }
+    }
+
+    fn accounts_screen(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Accounts");
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("Filter email or tags"));
+            if ui.button("Reload").clicked() {
+                self.reload();
+            }
+        });
+        let rows = self.visible_rows();
+        if rows.is_empty() {
+            ui.label("No accounts saved yet.");
+            return;
+        }
+        if self.selected_row >= rows.len() {
+            self.selected_row = 0;
+        }
+        ui.columns(2, |cols| {
+            egui::ScrollArea::vertical().show(&mut cols[0], |ui| {
+                for (i, row) in rows.iter().enumerate() {
+                    let selected = i == self.selected_row;
+                    if ui.selectable_label(selected, &row.email).clicked() {
+                        self.selected_row = i;
+                        self.edit_tags = row.tags.clone();
+                        self.edit_notes.clear();
+                        self.reveal_password = false;
+                        self.confirm_delete = false;
+                    }
+                }
+            });
+            let row = rows[self.selected_row].clone();
+            cols[1].group(|ui| {
+                ui.label(egui::RichText::new(&row.email).strong());
+                ui.label(format!("Age: {}d", row.age_days));
+                if let Some(days) = row.last_login_days {
+                    ui.label(format!("Last login: {days}d ago"));
+                } else {
+                    ui.label("Last login: never");
+                }
+                if row.locked {
+                    ui.colored_label(egui::Color32::from_rgb(255, 91, 96), "Locked (could not decrypt)");
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("Password:");
+                    if self.reveal_password {
+                        ui.monospace(&row.password);
+                    } else {
+                        ui.monospace(crate::util::mask(&row.password));
+                    }
+                    if ui.small_button(if self.reveal_password { "Hide" } else { "Reveal" }).clicked() {
+                        self.reveal_password = !self.reveal_password;
+                    }
+                    if ui.small_button("Copy").clicked() {
+                        let _ = crate::util::copy_to_clipboard(&row.password);
+                        self.toast = Some("Password copied".to_string());
+                    }
+                });
+                ui.separator();
+                ui.label("Tags:");
+                ui.text_edit_singleline(&mut self.edit_tags);
+                ui.label("Notes:");
+                ui.text_edit_multiline(&mut self.edit_notes);
+                if ui.button("Save tags").clicked() {
+                    // persist via credentials update
+                    if let Some(account) = crate::credentials::load_all(&self.cfg.encryption_password, &self.cfg.account_format)
+                        .into_iter().find(|a| a.creds.email == row.email) {
+                        let mut creds = account.creds;
+                        creds.tags = self.edit_tags.clone();
+                        creds.notes = self.edit_notes.clone();
+                        let _ = crate::credentials::update_credential(&creds.email, &creds, &self.cfg);
+                        self.reload();
+                        self.toast = Some("Saved".to_string());
+                    }
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.text_edit_singleline(&mut self.folder_name);
+                    if ui.button("Create folder").clicked() && !self.folder_name.trim().is_empty() {
+                        let name = self.folder_name.clone();
+                        let _ = self.bridge.commands.send(Command::CreateFolder { name });
+                        self.folder_name.clear();
+                    }
+                });
+                ui.separator();
+                if !self.confirm_delete {
+                    if ui.button(egui::RichText::new("Delete account").color(egui::Color32::from_rgb(255, 91, 96))).clicked() {
+                        self.confirm_delete = true;
+                    }
+                } else {
+                    ui.label("Are you sure?");
+                    ui.horizontal(|ui| {
+                        if ui.button("Yes, delete").clicked() {
+                            let _ = self.bridge.commands.send(Command::DeleteAccount { email: row.email.clone() });
+                            self.confirm_delete = false;
+                            self.selected_row = 0;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.confirm_delete = false;
+                        }
+                    });
+                }
+            });
+        });
+    }
+
+    fn settings_screen(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Settings");
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            egui::Grid::new("settings_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                ui.label("Max attempts");
+                ui.add(egui::DragValue::new(&mut self.settings.max_attempts).range(1..=10));
+                ui.end_row();
+                ui.label("Email provider");
+                ui.text_edit_singleline(&mut self.settings.email_provider);
+                ui.end_row();
+                ui.label("Mail timeout (s)");
+                ui.add(egui::DragValue::new(&mut self.settings.mail_timeout).range(30..=600));
+                ui.end_row();
+                ui.label("Visible browser");
+                ui.checkbox(&mut self.settings.visible_browser, "");
+                ui.end_row();
+                ui.label("Auto CSV export");
+                ui.checkbox(&mut self.settings.csv_export, "");
+                ui.end_row();
+                ui.label("Auto JSONL export");
+                ui.checkbox(&mut self.settings.jsonl_export, "");
+                ui.end_row();
+                ui.label("Proxy");
+                ui.text_edit_singleline(&mut self.settings.proxy);
+                ui.end_row();
+                ui.label("Proxy file");
+                ui.text_edit_singleline(&mut self.settings.proxy_file);
+                ui.end_row();
+                ui.label("Proxy per attempt");
+                ui.checkbox(&mut self.settings.proxy_per_attempt, "");
+                ui.end_row();
+                ui.label("Webhook URL");
+                ui.text_edit_singleline(&mut self.settings.webhook_url);
+                ui.end_row();
+                ui.label("Account format");
+                ui.text_edit_singleline(&mut self.settings.account_format);
+                ui.end_row();
+                ui.label("Encryption password");
+                ui.text_edit_singleline(&mut self.settings.encryption_password);
+                ui.end_row();
+                ui.label("Chromium path");
+                ui.text_edit_singleline(&mut self.settings.executable_path);
+                ui.end_row();
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    let _ = self.bridge.commands.send(Command::UpdateConfig(self.settings.clone()));
+                    self.cfg = self.settings.clone();
+                    self.reload();
+                }
+                if ui.button("Download Chromium").clicked() && !self.busy {
+                    self.busy = true;
+                    let _ = self.bridge.commands.send(Command::InstallChromium);
+                }
+            });
+            if let Some(toast) = &self.toast {
+                ui.label(toast);
+            }
+        });
+    }
+
     fn placeholder(&mut self, ui: &mut egui::Ui, title: &str, body: &str) {
         ui.label(RichText::new(title).heading().strong());
         ui.add_space(6.0);
@@ -792,21 +1025,9 @@ impl eframe::App for App {
                 Screen::Dashboard => self.dashboard(ui),
                 Screen::Create => self.create_screen(ui),
                 Screen::Keepalive => self.keepalive_screen(ui),
-                Screen::Cloud => self.placeholder(
-                    ui,
-                    "Cloud",
-                    "Browse, upload and download files on any saved account.",
-                ),
-                Screen::Accounts => self.placeholder(
-                    ui,
-                    "Accounts",
-                    "Reveal passwords, edit tags and notes, or remove an account.",
-                ),
-                Screen::Settings => self.placeholder(
-                    ui,
-                    "Settings",
-                    "Attempts, provider, browser, proxies, exports and encryption.",
-                ),
+                Screen::Cloud => self.cloud_screen(ui),
+                Screen::Accounts => self.accounts_screen(ui),
+                Screen::Settings => self.settings_screen(ui),
             });
     }
 }

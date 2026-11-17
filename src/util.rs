@@ -1,6 +1,14 @@
 use rand::distributions::Alphanumeric;
 use rand::Rng;
 
+pub fn mask(value: &str) -> String {
+    if value.len() <= 2 {
+        "*".repeat(value.len())
+    } else {
+        format!("{}{}", "*".repeat(value.len() - 2), &value[value.len() - 2..])
+    }
+}
+
 pub fn random_alnum(n: usize) -> String {
     rand::thread_rng()
         .sample_iter(&Alphanumeric)

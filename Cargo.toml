@@ -45,6 +45,7 @@ sysinfo = "0.33"
 eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts"] }
 egui_extras = "0.37"
 tokio-util = { version = "0.7", features = ["rt"] }
+rfd = "0.18"
 
 [dev-dependencies]
 tempfile = "3"

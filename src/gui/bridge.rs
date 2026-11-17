@@ -12,6 +12,9 @@ use std::time::Instant;
 use crate::browser::register::{register_with_retries, resolve_browser, RegisterOptions};
 use crate::console::{self, Color, Event, Output};
 use crate::models::Config;
+use crate::services::account;
+use crate::services::download;
+use crate::services::upload;
 use crate::services::alive::{self, AliveResult, KeepaliveSummary};
 
 /// Work requested by the UI.
@@ -19,6 +22,26 @@ use crate::services::alive::{self, AliveResult, KeepaliveSummary};
 pub enum Command {
     Create { total: u64, workers: usize },
     Keepalive { prune: bool },
+    UpdateConfig(Config),
+    ListCloud,
+    UploadFile { path: std::path::PathBuf },
+    DownloadFile { handle: String, dest: std::path::PathBuf },
+    DeleteAccount { email: String },
+    CreateFolder { name: String },
+    InstallChromium,
+}
+
+#[derive(Debug, Clone)]
+pub struct CloudFile {
+    pub handle: String,
+    pub name: String,
+    pub size: u64,
+}
+
+impl From<crate::mega::MegaNode> for CloudFile {
+    fn from(node: crate::mega::MegaNode) -> Self {
+        Self { handle: node.handle, name: node.name, size: node.size }
+    }
 }
 
 /// Something the background runtime wants the UI to show.
@@ -31,6 +54,7 @@ pub enum UiEvent {
     Finished { ok: u64, failed: u64, seconds: f64 },
     KeepaliveRow { email: String, alive: bool, quota_gb: Option<f64>, error: Option<String> },
     KeepaliveResults(Vec<AliveResult>, KeepaliveSummary),
+    CloudFiles(Vec<CloudFile>),
     Toast { kind: String, text: String },
     Idle,
 }
@@ -60,15 +84,80 @@ impl Bridge {
             };
             attach_hook(event_tx.clone());
             runtime.block_on(async move {
+                let mut cfg = cfg;
                 while let Ok(command) = command_rx.recv() {
                     match command {
                         Command::Create { total, workers } => {
                             create_batch(&cfg, total, workers, &event_tx).await;
                         }
-                        Command::Keepalive { prune } => {
-                            keepalive(&cfg, prune, &event_tx).await;
+            Command::Keepalive { prune } => {
+                keepalive(&cfg, prune, &event_tx).await;
+            }
+            Command::UpdateConfig(new) => {
+                cfg = new;
+                let _ = event_tx.send(UiEvent::Toast { kind: "success".to_string(), text: "Settings saved".to_string() });
+            }
+            Command::ListCloud => {
+                match first_cred(&cfg) {
+                    Some(creds) => match download::list_files(&cfg, &creds).await {
+                        Ok(files) => { let _ = event_tx.send(UiEvent::CloudFiles(files.into_iter().map(CloudFile::from).collect())); }
+                        Err(e) => { let _ = event_tx.send(UiEvent::Toast { kind: "error".to_string(), text: format!("{e:#}") }); }
+                    },
+                    None => { let _ = event_tx.send(UiEvent::Toast { kind: "error".to_string(), text: "No saved accounts".to_string() }); }
+                }
+            }
+            Command::UploadFile { path } => {
+                match first_cred(&cfg) {
+                    Some(creds) => match upload::upload_file(&cfg, &creds, &path, false).await {
+                        Ok(result) => {
+                            let _ = event_tx.send(UiEvent::Toast { kind: "success".to_string(), text: format!("Uploaded {}", result.handle) });
+                            if let Ok(files) = download::list_files(&cfg, &creds).await { let _ = event_tx.send(UiEvent::CloudFiles(files.into_iter().map(CloudFile::from).collect())); }
+                        }
+                        Err(e) => { let _ = event_tx.send(UiEvent::Toast { kind: "error".to_string(), text: format!("{e:#}") }); }
+                    },
+                    None => { let _ = event_tx.send(UiEvent::Toast { kind: "error".to_string(), text: "No saved accounts".to_string() }); }
+                }
+            }
+            Command::DownloadFile { handle, dest } => {
+                if let Some(creds) = first_cred(&cfg) {
+                    if let Ok(files) = download::list_files(&cfg, &creds).await {
+                        if let Some(node) = files.into_iter().find(|f| f.handle == handle) {
+                            match download::download_file(&cfg, &creds, &node, &dest).await {
+                                Ok(path) => { let _ = event_tx.send(UiEvent::Toast { kind: "success".to_string(), text: format!("Downloaded to {}", path.display()) }); }
+                                Err(e) => { let _ = event_tx.send(UiEvent::Toast { kind: "error".to_string(), text: format!("{e:#}") }); }
+                            }
                         }
                     }
+                }
+            }
+            Command::DeleteAccount { email } => {
+                let creds = crate::credentials::load_all(&cfg.encryption_password, &cfg.account_format).into_iter().find(|c| c.creds.email == email && !c.decrypt_failed).map(|c| c.creds);
+                if let Some(creds) = creds {
+                    match account::delete_account(&cfg, &creds).await {
+                        Ok(()) => { let _ = event_tx.send(UiEvent::Toast { kind: "success".to_string(), text: format!("Deleted {email}") }); }
+                        Err(e) => { let _ = event_tx.send(UiEvent::Toast { kind: "error".to_string(), text: format!("{e:#}") }); }
+                    }
+                }
+            }
+            Command::CreateFolder { name } => {
+                if let Some(creds) = first_cred(&cfg) {
+                    match account::create_folder(&cfg, &creds, &name).await {
+                        Ok(_) => { let _ = event_tx.send(UiEvent::Toast { kind: "success".to_string(), text: format!("Created folder {name}") }); }
+                        Err(e) => { let _ = event_tx.send(UiEvent::Toast { kind: "error".to_string(), text: format!("{e:#}") }); }
+                    }
+                }
+            }
+            Command::InstallChromium => {
+                match crate::browser::install::download_chromium().await {
+                    Ok(path) => {
+                        cfg.executable_path = path.to_string_lossy().to_string();
+                        let _ = crate::config::save(None, &cfg);
+                        let _ = event_tx.send(UiEvent::Toast { kind: "success".to_string(), text: format!("Chromium installed at {}", path.display()) });
+                    }
+                    Err(e) => { let _ = event_tx.send(UiEvent::Toast { kind: "error".to_string(), text: format!("{e:#}") }); }
+                }
+            }
+        }
                     let _ = event_tx.send(UiEvent::Idle);
                 }
             });
@@ -119,6 +208,10 @@ fn attach_hook(tx: Sender<UiEvent>) {
         };
         let _ = tx.send(event);
     })));
+}
+
+fn first_cred(cfg: &Config) -> Option<crate::models::Credentials> {
+    crate::credentials::load_all(&cfg.encryption_password, &cfg.account_format).into_iter().find(|c| !c.decrypt_failed).map(|c| c.creds)
 }
 
 fn options_for(cfg: &Config, browser: PathBuf) -> RegisterOptions {
