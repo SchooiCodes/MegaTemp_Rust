@@ -262,8 +262,10 @@ automatically by the release workflow.
 
 ## Documentation
 
-The original project's documentation applies unchanged:
-<https://github.com/SchooiCodes/MegaTemp#readme>.
+- In-repo guide: [docs/wiki/Home.md](docs/wiki/Home.md) (CLI, GUI, compatibility, FAQ)
+- Hosted wiki: <https://github.com/SchooiCodes/MegaTemp_Rust/wiki>
+- The original project's documentation applies unchanged:
+  <https://github.com/SchooiCodes/MegaTemp#readme>.
 
 ## License
 
