@@ -128,6 +128,12 @@ pub async fn register_one(options: &RegisterOptions) -> Result<RegisteredAccount
                     p_print(&format!("  Could not save credentials: {e}"), Color::Fail);
                 }
             }
+            crate::console::event(crate::console::Event::AccountCreated {
+                worker: crate::console::current_label(),
+                email: account.email.clone(),
+                password: account.password.clone(),
+                seconds: started.elapsed().as_secs_f64(),
+            });
             if !options.cfg.webhook_url.is_empty() {
                 send_webhook(
                     &options.cfg.webhook_url,

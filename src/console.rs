@@ -4,11 +4,98 @@ use std::cell::RefCell;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 pub const VERSION: &str = "v1.8.0";
 pub const RELEASES_URL: &str = "https://api.github.com/repos/SchooiCodes/MegaTemp/releases";
+
+/// A structured progress event.
+///
+/// The terminal ignores these; a GUI observer turns them into cards, tables
+/// and toasts instead of parsing log text.
+#[derive(Debug, Clone)]
+pub enum Event {
+    RunStarted {
+        kind: String,
+        total: u64,
+        workers: usize,
+    },
+    AccountCreated {
+        worker: Option<String>,
+        email: String,
+        password: String,
+        seconds: f64,
+    },
+    RunProgress {
+        done: u64,
+        total: u64,
+        ok: u64,
+        failed: u64,
+    },
+    RunFinished {
+        ok: u64,
+        failed: u64,
+        seconds: f64,
+    },
+    KeepaliveAccount {
+        email: String,
+        alive: bool,
+        quota_gb: Option<f64>,
+        error: Option<String>,
+    },
+    KeepaliveFinished {
+        total: usize,
+        alive: usize,
+        dead: usize,
+        pruned: usize,
+    },
+    Toast {
+        kind: String,
+        text: String,
+    },
+}
+
+/// One piece of output handed to an observer.
+#[derive(Debug, Clone)]
+pub enum Output {
+    Line {
+        text: String,
+        colour: Color,
+        worker: Option<String>,
+    },
+    Status(String),
+    Event(Event),
+}
+
+/// Receiver for every line, status update and event the tool produces.
+pub type OutputHook = Arc<dyn Fn(Output) + Send + Sync>;
+
+static HOOK: OnceLock<Mutex<Option<OutputHook>>> = OnceLock::new();
+
+fn hook_slot() -> &'static Mutex<Option<OutputHook>> {
+    HOOK.get_or_init(|| Mutex::new(None))
+}
+
+/// Install (or clear, with `None`) the observer used by the GUI.
+pub fn set_output_hook(hook: Option<OutputHook>) {
+    *hook_slot().lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
+}
+
+fn dispatch(output: Output) {
+    let hook = hook_slot()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    if let Some(hook) = hook {
+        hook(output);
+    }
+}
+
+/// Report a structured progress event to an attached observer.
+pub fn event(event: Event) {
+    dispatch(Output::Event(event));
+}
 
 static QUIET: AtomicBool = AtomicBool::new(false);
 static JSON_MODE: AtomicBool = AtomicBool::new(false);
@@ -28,7 +115,15 @@ tokio::task_local! {
     /// unlike thread-locals, so a parallel worker keeps its tag.
     static LABEL: Option<String>;
     /// Lines captured for the current task, printed together when it finishes.
-    static TASK_CAPTURE: RefCell<Option<Vec<String>>>;
+    static TASK_CAPTURE: RefCell<Option<Vec<CapturedLine>>>;
+}
+
+/// A buffered line kept in both its coloured and plain forms.
+#[derive(Debug, Clone)]
+struct CapturedLine {
+    rendered: String,
+    plain: String,
+    colour: Color,
 }
 
 /// Run `future` with every line it prints prefixed by `[label]`.
@@ -71,14 +166,24 @@ fn flush_task_capture() {
     if lines.is_empty() {
         return;
     }
-    let _guard = lock_writes();
-    let tty = std::io::stdout().is_terminal();
-    let mut out = std::io::stdout().lock();
-    for line in lines {
-        end_status_line(&mut out, tty);
-        let _ = writeln!(out, "{line}");
+    let worker = current_label();
+    {
+        let _guard = lock_writes();
+        let tty = std::io::stdout().is_terminal();
+        let mut out = std::io::stdout().lock();
+        for line in &lines {
+            end_status_line(&mut out, tty);
+            let _ = writeln!(out, "{}", line.rendered);
+        }
+        let _ = out.flush();
     }
-    let _ = out.flush();
+    for line in lines {
+        dispatch(Output::Line {
+            text: line.plain,
+            colour: line.colour,
+            worker: worker.clone(),
+        });
+    }
 }
 
 /// Tag of the current task, or `None` for single, untagged runs.
@@ -86,8 +191,15 @@ pub fn current_label() -> Option<String> {
     LABEL.try_with(|label| label.clone()).ok().flatten()
 }
 
-fn label_prefix() -> String {
+/// Plain (uncoloured) `[w1] ` style prefix for observers.
+fn label_plain() -> String {
     match current_label() {
+        Some(label) => format!("[{label}] "),
+        None => String::new(),
+    }
+}
+
+fn label_prefix() -> String {    match current_label() {
         Some(label) => {
             if colors_enabled() {
                 // Give each worker its own colour so concurrent lines are easy to
@@ -117,7 +229,7 @@ fn end_status_line(out: &mut impl Write, tty: bool) {
 }
 
 thread_local! {
-    static CAPTURE: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+    static CAPTURE: RefCell<Option<Vec<CapturedLine>>> = const { RefCell::new(None) };
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,6 +330,7 @@ pub fn p_print(text: &str, colour: Color) {
         return;
     }
     let prefix = label_prefix();
+    let plain = format!("{}{}", label_plain(), text);
     let rendered = if colors_enabled() {
         let c = code(colour);
         format!("{c}{prefix}{c}{text}{}", code(Color::End))
@@ -228,11 +341,16 @@ pub fn p_print(text: &str, colour: Color) {
     // A worker task buffers its own lines until it finishes, so concurrent
     // accounts never interleave mid-block. Synchronous captures still work for
     // callers that opt into them explicitly.
+    let entry = CapturedLine {
+        rendered: rendered.clone(),
+        plain: plain.clone(),
+        colour,
+    };
     let buffered = TASK_CAPTURE.try_with(|cell| {
         let mut slot = cell.borrow_mut();
         match slot.as_mut() {
             Some(buf) => {
-                buf.push(rendered.clone());
+                buf.push(entry.clone());
                 true
             }
             None => false,
@@ -242,7 +360,7 @@ pub fn p_print(text: &str, colour: Color) {
         Ok(true) => true,
         Ok(false) | Err(_) => CAPTURE.with(|cell| {
             if let Some(buf) = cell.borrow_mut().as_mut() {
-                buf.push(rendered.clone());
+                buf.push(entry);
                 true
             } else {
                 false
@@ -252,16 +370,23 @@ pub fn p_print(text: &str, colour: Color) {
     if buffered {
         return;
     }
-    let _guard = lock_writes();
-    if JSON_MODE.load(Ordering::Relaxed) {
-        eprintln!("{rendered}");
-        return;
+    {
+        let _guard = lock_writes();
+        if JSON_MODE.load(Ordering::Relaxed) {
+            eprintln!("{rendered}");
+        } else {
+            let tty = std::io::stdout().is_terminal();
+            let mut out = std::io::stdout().lock();
+            end_status_line(&mut out, tty);
+            let _ = writeln!(out, "{rendered}");
+            let _ = out.flush();
+        }
     }
-    let tty = std::io::stdout().is_terminal();
-    let mut out = std::io::stdout().lock();
-    end_status_line(&mut out, tty);
-    let _ = writeln!(out, "{rendered}");
-    let _ = out.flush();
+    dispatch(Output::Line {
+        text: plain,
+        colour,
+        worker: current_label(),
+    });
 }
 
 pub fn capture_start() {
@@ -269,7 +394,14 @@ pub fn capture_start() {
 }
 
 pub fn capture_end() -> Vec<String> {
-    CAPTURE.with(|cell| cell.borrow_mut().take().unwrap_or_default())
+    CAPTURE.with(|cell| {
+        cell.borrow_mut()
+            .take()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|line| line.rendered)
+            .collect()
+    })
 }
 
 pub fn separator(title: &str, width: usize) {
@@ -291,7 +423,11 @@ pub fn separator(title: &str, width: usize) {
         .try_with(|cell| {
             let mut slot = cell.borrow_mut();
             if let Some(buf) = slot.as_mut() {
-                buf.push(line.clone());
+                buf.push(CapturedLine {
+                    rendered: line.clone(),
+                    plain: line.clone(),
+                    colour: Color::Header,
+                });
                 true
             } else {
                 false
@@ -301,12 +437,19 @@ pub fn separator(title: &str, width: usize) {
     if captured {
         return;
     }
-    let _guard = lock_writes();
-    let tty = std::io::stdout().is_terminal();
-    let mut out = std::io::stdout().lock();
-    end_status_line(&mut out, tty);
-    let _ = writeln!(out, "{line}");
-    let _ = out.flush();
+    {
+        let _guard = lock_writes();
+        let tty = std::io::stdout().is_terminal();
+        let mut out = std::io::stdout().lock();
+        end_status_line(&mut out, tty);
+        let _ = writeln!(out, "{line}");
+        let _ = out.flush();
+    }
+    dispatch(Output::Line {
+        text: line,
+        colour: Color::Header,
+        worker: current_label(),
+    });
 }
 
 pub fn elapsed(start: Instant) -> String {
@@ -342,6 +485,7 @@ pub fn status_line(text: &str) {
     }
     STATUS_LAST.store(now, Ordering::Relaxed);
     let rendered = format!("{}{}", label_prefix(), text);
+    dispatch(Output::Status(format!("{}{}", label_plain(), text)));
     let _guard = lock_writes();
     if tty {
         let mut out = std::io::stdout().lock();

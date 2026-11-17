@@ -175,6 +175,12 @@ pub async fn check_all(
             p_print(&format!("  Pruned: {}", summary.pruned), Color::Cyan);
         }
     }
+    crate::console::event(crate::console::Event::KeepaliveFinished {
+        total: summary.total,
+        alive: summary.alive,
+        dead: summary.dead,
+        pruned: summary.pruned,
+    });
     Ok((results, summary))
 }
 
@@ -246,5 +252,12 @@ async fn check_one(cfg: &Config, account: &LoadedCredential, prune: bool, _yes: 
             }
         }
     }
+    let alive = base.status == "alive";
+    crate::console::event(crate::console::Event::KeepaliveAccount {
+        email: base.email.clone(),
+        alive,
+        quota_gb: base.quota_gb,
+        error: base.error.clone(),
+    });
     base
 }

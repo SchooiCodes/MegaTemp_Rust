@@ -3,6 +3,8 @@
 use eframe::egui::{self, RichText};
 use egui_extras::{Column, TableBuilder};
 
+use crate::console::Color;
+use crate::gui::bridge::{Bridge, Command, UiEvent};
 use crate::gui::theme as t;
 use crate::models::Config;
 use crate::{config, credentials, console};
@@ -55,6 +57,19 @@ pub struct App {
     screen: Screen,
     rows: Vec<Row>,
     filter: String,
+    bridge: Bridge,
+    create_total: u64,
+    create_workers: usize,
+    create_provider: String,
+    created: Vec<(String, String, f64)>,
+    activity: Vec<(String, Color)>,
+    status: Option<String>,
+    progress: Option<(u64, u64, u64, u64)>,
+    busy: bool,
+    prune: bool,
+    keep_rows: Vec<(String, bool, Option<f64>, Option<String>)>,
+    keep_summary: Option<(usize, usize, usize, usize)>,
+    toast: Option<String>,
 }
 
 impl App {
@@ -62,13 +77,117 @@ impl App {
         t::apply(&cc.egui_ctx);
         let cfg = config::load(None);
         let mut app = Self {
+            create_total: 1,
+            create_workers: 1,
+            create_provider: cfg.email_provider.clone(),
+            bridge: Bridge::start(cfg.clone()),
             cfg,
             screen: Screen::Dashboard,
             rows: Vec::new(),
             filter: String::new(),
+            created: Vec::new(),
+            activity: Vec::new(),
+            status: None,
+            progress: None,
+            busy: false,
+            prune: false,
+            keep_rows: Vec::new(),
+            keep_summary: None,
+            toast: None,
         };
         app.reload();
         app
+    }
+
+    /// Pull everything the worker runtime produced since the last frame.
+    fn drain_events(&mut self) {
+        while let Ok(event) = self.bridge.events.try_recv() {
+            match event {
+                UiEvent::Line { text, colour, .. } => {
+                    self.activity.push((text, colour));
+                    if self.activity.len() > 500 {
+                        self.activity.remove(0);
+                    }
+                }
+                UiEvent::Status(text) => self.status = Some(text),
+                UiEvent::Progress {
+                    done,
+                    total,
+                    ok,
+                    failed,
+                } => self.progress = Some((done, total, ok, failed)),
+                UiEvent::Created {
+                    email,
+                    password,
+                    seconds,
+                } => self.created.insert(0, (email, password, seconds)),
+                UiEvent::Finished { ok, failed, .. } => {
+                    self.busy = false;
+                    self.status = None;
+                    self.toast = Some(format!("Run finished: {ok} created, {failed} failed"));
+                    self.reload();
+                }
+                UiEvent::KeepaliveRow {
+                    email,
+                    alive,
+                    quota_gb,
+                    error,
+                } => {
+                    self.keep_rows.retain(|row| row.0 != email);
+                    self.keep_rows.push((email, alive, quota_gb, error));
+                }
+                UiEvent::KeepaliveResults(results, summary) => {
+                    self.busy = false;
+                    self.status = None;
+                    self.keep_rows = results
+                        .into_iter()
+                        .map(|row| (row.email, row.status == "alive", row.quota_gb, row.error))
+                        .collect();
+                    self.keep_summary =
+                        Some((summary.total, summary.alive, summary.dead, summary.pruned));
+                    self.toast = Some(format!(
+                        "Keepalive: {} alive, {} dead",
+                        summary.alive, summary.dead
+                    ));
+                }
+                UiEvent::Toast { kind, text } => {
+                    self.toast = Some(if kind == "error" {
+                        format!("Error: {text}")
+                    } else {
+                        text
+                    });
+                }
+                UiEvent::Idle => {
+                    self.busy = false;
+                    self.status = None;
+                }
+            }
+        }
+    }
+
+    fn start_create(&mut self) {
+        self.busy = true;
+        self.progress = Some((0, self.create_total, 0, 0));
+        self.created.clear();
+        self.activity.clear();
+        self.toast = None;
+        let _ = self.bridge.commands.send(Command::Create {
+            total: self.create_total,
+            workers: self.create_workers,
+        });
+    }
+
+    fn start_keepalive(&mut self) {
+        self.busy = true;
+        self.status = None;
+        self.keep_rows.clear();
+        self.keep_summary = None;
+        self.activity.clear();
+        self.toast = None;
+        let _ = self
+            .bridge
+            .commands
+            .send(Command::Keepalive { prune: self.prune });
     }
 
     fn reload(&mut self) {
@@ -133,6 +252,11 @@ impl App {
                     ui.label(RichText::new(console::VERSION).size(12.0).color(t::FAINT));
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let (label, colour) = if self.busy {
+                            ("Working", t::ACCENT)
+                        } else {
+                            ("Idle", t::MUTED)
+                        };
                         // Painted rather than a glyph: the default font has no
                         // reliable round dot, and a status pill should never
                         // depend on emoji fallbacks.
@@ -149,14 +273,14 @@ impl App {
                         painter.circle_filled(
                             egui::pos2(rect.left() + 16.0, rect.center().y),
                             3.5,
-                            t::MUTED,
+                            colour,
                         );
                         painter.text(
                             egui::pos2(rect.left() + 27.0, rect.center().y),
                             egui::Align2::LEFT_CENTER,
-                            "Idle",
+                            label,
                             egui::FontId::proportional(12.0),
-                            t::MUTED,
+                            colour,
                         );
                     });
                 });
@@ -313,6 +437,317 @@ impl App {
         });
     }
 
+    fn create_screen(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label(
+                    RichText::new("Create accounts")
+                        .size(24.0)
+                        .strong()
+                        .color(t::TEXT),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(
+                        "Register MEGA accounts with disposable mailboxes. Each worker runs the full browser flow.",
+                    )
+                    .size(13.0)
+                    .color(t::MUTED),
+                );
+            });
+            ui.with_layout(
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    let label = if self.busy { "Working…" } else { "Start run" };
+                    let button = egui::Button::new(
+                        RichText::new(label)
+                            .size(14.0)
+                            .strong()
+                            .color(egui::Color32::WHITE),
+                    )
+                    .fill(if self.busy { t::RAISED } else { t::ACCENT })
+                    .corner_radius(egui::CornerRadius::same(9))
+                    .min_size(egui::vec2(132.0, 36.0));
+                    if ui.add_enabled(!self.busy, button).clicked() {
+                        self.start_create();
+                    }
+                },
+            );
+        });
+        ui.add_space(18.0);
+
+        t::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            t::section_label("Batch");
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Accounts").size(13.0).color(t::MUTED));
+                ui.add(
+                    egui::DragValue::new(&mut self.create_total)
+                        .range(1..=500)
+                        .speed(1.0),
+                );
+                ui.add_space(18.0);
+                ui.label(RichText::new("Workers").size(13.0).color(t::MUTED));
+                ui.add(
+                    egui::DragValue::new(&mut self.create_workers)
+                        .range(1..=32)
+                        .speed(1.0),
+                );
+                ui.add_space(18.0);
+                ui.label(RichText::new("Provider").size(13.0).color(t::MUTED));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.create_provider)
+                        .desired_width(150.0)
+                        .hint_text("mailtm"),
+                );
+                ui.add_space(18.0);
+                ui.label(RichText::new("Attempts").size(13.0).color(t::MUTED));
+                ui.add(egui::DragValue::new(&mut self.cfg.max_attempts).range(1..=20));
+            });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                for provider in ["mailtm", "guerrillamail", "mailgw"] {
+                    let selected = self.create_provider.eq_ignore_ascii_case(provider);
+                    let colour = if selected { t::TEXT } else { t::MUTED };
+                    let btn = egui::Button::new(
+                        RichText::new(provider).size(12.0).color(colour).strong(),
+                    )
+                    .fill(if selected {
+                        colour.gamma_multiply(0.25)
+                    } else {
+                        t::RAISED
+                    })
+                    .stroke(egui::Stroke::new(1.0, colour.gamma_multiply(0.55)))
+                    .corner_radius(egui::CornerRadius::same(255))
+                    .min_size(egui::vec2(60.0, 24.0));
+                    if ui.add(btn).clicked() {
+                        self.create_provider = provider.to_string();
+                    }
+                }
+                ui.add_space(10.0);
+                ui.checkbox(&mut self.cfg.visible_browser, "Show the browser");
+            });
+        });
+
+        if let Some((done, total, ok, failed)) = self.progress {
+            ui.add_space(14.0);
+            t::card().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let ratio = if total == 0 {
+                    0.0
+                } else {
+                    done as f32 / total as f32
+                };
+                ui.add(
+                    egui::ProgressBar::new(ratio)
+                        .desired_height(8.0)
+                        .fill(t::ACCENT)
+                        .text(format!("{done}/{total} · {ok} ok · {failed} failed")),
+                );
+                if let Some(status) = &self.status {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(status).size(12.0).color(t::MUTED));
+                }
+            });
+        }
+
+        if !self.created.is_empty() {
+            ui.add_space(14.0);
+            t::card().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                t::section_label(&format!("Created this run ({})", self.created.len()));
+                ui.add_space(6.0);
+                egui::ScrollArea::vertical()
+                    .max_height(220.0)
+                    .show(ui, |ui| {
+                        for (email, password, seconds) in &self.created {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(email).monospace().size(12.0).color(t::TEXT));
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(
+                                            RichText::new(format!("{seconds:.1}s"))
+                                                .size(11.0)
+                                                .color(t::MUTED),
+                                        );
+                                        ui.label(
+                                            RichText::new(password)
+                                                .monospace()
+                                                .size(12.0)
+                                                .color(t::OK),
+                                        );
+                                        ui.label(
+                                            RichText::new("password").size(10.0).color(t::FAINT),
+                                        );
+                                    },
+                                );
+                            });
+                        }
+                    });
+            });
+        }
+
+        if !self.activity.is_empty() {
+            ui.add_space(14.0);
+            t::card().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                egui::CollapsingHeader::new(
+                    RichText::new(format!("Activity ({})", self.activity.len()))
+                        .size(12.0)
+                        .color(t::MUTED),
+                )
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                        for (line, colour) in &self.activity {
+                            ui.label(
+                                RichText::new(line)
+                                    .monospace()
+                                    .size(11.5)
+                                    .color(ui_colour(*colour)),
+                            );
+                        }
+                    });
+                });
+            });
+        }
+    }
+
+    fn keepalive_screen(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label(
+                    RichText::new("Keep alive")
+                        .size(24.0)
+                        .strong()
+                        .color(t::TEXT),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(
+                        "Log every saved account in, read its free storage and prune the dead ones.",
+                    )
+                    .size(13.0)
+                    .color(t::MUTED),
+                );
+            });
+            ui.with_layout(
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    let label = if self.busy { "Working…" } else { "Check all" };
+                    let button = egui::Button::new(
+                        RichText::new(label)
+                            .size(14.0)
+                            .strong()
+                            .color(egui::Color32::WHITE),
+                    )
+                    .fill(if self.busy { t::RAISED } else { t::ACCENT })
+                    .corner_radius(egui::CornerRadius::same(9))
+                    .min_size(egui::vec2(132.0, 36.0));
+                    if ui.add_enabled(!self.busy, button).clicked() {
+                        self.start_keepalive();
+                    }
+                },
+            );
+        });
+        ui.add_space(18.0);
+
+        t::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.prune, "Remove dead accounts");
+                ui.add_space(12.0);
+                if let Some(status) = &self.status {
+                    ui.label(RichText::new(status).size(12.0).color(t::MUTED));
+                }
+            });
+        });
+
+        if let Some((total, alive, dead, pruned)) = self.keep_summary {
+            ui.add_space(14.0);
+            ui.horizontal(|ui| {
+                for (label, value, colour) in [
+                    ("Total", total, t::TEXT),
+                    ("Alive", alive, t::OK),
+                    ("Dead", dead, if dead == 0 { t::OK } else { t::WARN }),
+                    ("Pruned", pruned, t::MUTED),
+                ] {
+                    t::card().show(ui, |ui| {
+                        ui.set_width(150.0);
+                        t::section_label(label);
+                        ui.label(
+                            RichText::new(value.to_string())
+                                .size(26.0)
+                                .strong()
+                                .color(colour),
+                        );
+                    });
+                }
+            });
+        }
+
+        ui.add_space(14.0);
+        t::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            if self.keep_rows.is_empty() {
+                ui.add_space(10.0);
+                ui.label(
+                    RichText::new("No results yet. Press Check all to log in to every saved account.")
+                        .size(13.0)
+                        .color(t::MUTED),
+                );
+                ui.add_space(10.0);
+                return;
+            }
+            let table_height = (ui.available_height() - 40.0).max(180.0);
+            TableBuilder::new(ui)
+                .striped(true)
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .max_scroll_height(table_height)
+                .column(Column::initial(300.0).at_least(220.0))
+                .column(Column::exact(90.0))
+                .column(Column::exact(90.0))
+                .column(Column::remainder().at_least(160.0))
+                .header(30.0, |mut header| {
+                    for title in ["Email", "Status", "Storage", "Detail"] {
+                        header.col(|ui| {
+                            ui.label(t::section_label(title));
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(34.0, self.keep_rows.len(), |mut row| {
+                        let (email, alive, quota, error) = &self.keep_rows[row.index()];
+                        row.col(|ui| {
+                            ui.label(RichText::new(email).monospace().size(12.0).color(t::TEXT));
+                        });
+                        row.col(|ui| {
+                            let (text, colour) = if *alive {
+                                ("alive", t::OK)
+                            } else {
+                                ("dead", t::DANGER)
+                            };
+                            t::chip(ui, text, colour);
+                        });
+                        row.col(|ui| {
+                            let text = quota
+                                .map(|q| format!("{q:.1} GB"))
+                                .unwrap_or_else(|| "—".to_string());
+                            ui.label(RichText::new(text).size(12.0).color(t::MUTED));
+                        });
+                        row.col(|ui| {
+                            if let Some(error) = error {
+                                ui.label(
+                                    RichText::new(error).size(11.0).color(t::DANGER),
+                                );
+                            }
+                        });
+                    });
+                });
+        });
+    }
+
     fn placeholder(&mut self, ui: &mut egui::Ui, title: &str, body: &str) {
         ui.label(RichText::new(title).heading().strong());
         ui.add_space(6.0);
@@ -341,6 +776,10 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.drain_events();
+        if self.busy {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(120));
+        }
         self.top_bar(ui);
         self.rail(ui);
         egui::CentralPanel::default()
@@ -351,16 +790,8 @@ impl eframe::App for App {
             )
             .show(ui, |ui| match self.screen {
                 Screen::Dashboard => self.dashboard(ui),
-                Screen::Create => self.placeholder(
-                    ui,
-                    "Create accounts",
-                    "Single, sequential and parallel batches with live worker progress.",
-                ),
-                Screen::Keepalive => self.placeholder(
-                    ui,
-                    "Keepalive",
-                    "Log every saved account in, read storage and prune dead ones.",
-                ),
+                Screen::Create => self.create_screen(ui),
+                Screen::Keepalive => self.keepalive_screen(ui),
                 Screen::Cloud => self.placeholder(
                     ui,
                     "Cloud",
@@ -517,3 +948,15 @@ fn mask(value: &str) -> String {
         value.chars().skip(count - 2).collect::<String>()
     )
 }
+
+fn ui_colour(colour: Color) -> egui::Color32 {
+    match colour {
+        Color::Warning => t::WARN,
+        Color::Fail => t::DANGER,
+        Color::Ok | Color::Green => t::OK,
+        Color::Cyan => t::ACCENT,
+        Color::Blue => t::MUTED,
+        _ => t::MUTED,
+    }
+}
+
