@@ -27,9 +27,14 @@ tokio::task_local! {
     /// Task-locals travel with the task when tokio moves it between threads,
     /// unlike thread-locals, so a parallel worker keeps its tag.
     static LABEL: Option<String>;
+    /// Lines captured for the current task, printed together when it finishes.
+    static TASK_CAPTURE: RefCell<Option<Vec<String>>>;
 }
 
 /// Run `future` with every line it prints prefixed by `[label]`.
+///
+/// Wrap a unit of work in [`collected`] as well to print its lines as one
+/// block; the label alone only tags them.
 pub fn labelled<F>(
     label: impl Into<String>,
     future: F,
@@ -38,6 +43,42 @@ where
     F: std::future::Future,
 {
     LABEL.scope(Some(label.into()), future)
+}
+
+/// Run `future`, buffering everything it prints and writing the lines as one
+/// block when it finishes.
+///
+/// Parallel workers wrap each registration in this so concurrent accounts never
+/// interleave line by line, while still streaming progress per account.
+pub async fn collected<F>(future: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    TASK_CAPTURE
+        .scope(RefCell::new(Some(Vec::new())), async move {
+            let out = future.await;
+            flush_task_capture();
+            out
+        })
+        .await
+}
+
+/// Write every line captured by the current task's buffer.
+fn flush_task_capture() {
+    let lines = TASK_CAPTURE
+        .try_with(|cell| cell.borrow_mut().take().unwrap_or_default())
+        .unwrap_or_default();
+    if lines.is_empty() {
+        return;
+    }
+    let _guard = lock_writes();
+    let tty = std::io::stdout().is_terminal();
+    let mut out = std::io::stdout().lock();
+    for line in lines {
+        end_status_line(&mut out, tty);
+        let _ = writeln!(out, "{line}");
+    }
+    let _ = out.flush();
 }
 
 /// Tag of the current task, or `None` for single, untagged runs.
@@ -184,14 +225,30 @@ pub fn p_print(text: &str, colour: Color) {
         format!("{prefix}{text}")
     };
 
-    let buffered = CAPTURE.with(|cell| {
-        if let Some(buf) = cell.borrow_mut().as_mut() {
-            buf.push(rendered.clone());
-            true
-        } else {
-            false
+    // A worker task buffers its own lines until it finishes, so concurrent
+    // accounts never interleave mid-block. Synchronous captures still work for
+    // callers that opt into them explicitly.
+    let buffered = TASK_CAPTURE.try_with(|cell| {
+        let mut slot = cell.borrow_mut();
+        match slot.as_mut() {
+            Some(buf) => {
+                buf.push(rendered.clone());
+                true
+            }
+            None => false,
         }
     });
+    let buffered = match buffered {
+        Ok(true) => true,
+        Ok(false) | Err(_) => CAPTURE.with(|cell| {
+            if let Some(buf) = cell.borrow_mut().as_mut() {
+                buf.push(rendered.clone());
+                true
+            } else {
+                false
+            }
+        }),
+    };
     if buffered {
         return;
     }
@@ -230,6 +287,20 @@ pub fn separator(title: &str, width: usize) {
             format!("{}{}{}", ch.repeat(left), label, ch.repeat(right))
         }
     };
+    let captured = TASK_CAPTURE
+        .try_with(|cell| {
+            let mut slot = cell.borrow_mut();
+            if let Some(buf) = slot.as_mut() {
+                buf.push(line.clone());
+                true
+            } else {
+                false
+            }
+        })
+        .unwrap_or(false);
+    if captured {
+        return;
+    }
     let _guard = lock_writes();
     let tty = std::io::stdout().is_terminal();
     let mut out = std::io::stdout().lock();
@@ -247,7 +318,20 @@ pub fn elapsed(start: Instant) -> String {
     }
 }
 
+/// True when the current task is collecting its output for a grouped flush.
+fn capturing() -> bool {
+    TASK_CAPTURE
+        .try_with(|cell| cell.borrow().is_some())
+        .unwrap_or(false)
+}
+
 pub fn status_line(text: &str) {
+    // A captured block is printed later, so a redirected status line would
+    // land before the lines that logically precede it. On a terminal the
+    // single live line is erased before the block appears, so it stays.
+    if capturing() && !std::io::stdout().is_terminal() {
+        return;
+    }
     let now = chrono::Utc::now().timestamp_millis();
     let tty = std::io::stdout().is_terminal();
     if !tty {

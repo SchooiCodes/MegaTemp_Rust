@@ -125,7 +125,7 @@ impl Menu {
                         if i > 0 {
                             tokio::time::sleep(Duration::from_secs(1)).await;
                         }
-                        match register_with_retries(&options).await {
+                        match crate::console::collected(register_with_retries(&options)).await {
                             Ok(_) => ok += 1,
                             Err(e) => {
                                 bad += 1;
@@ -589,7 +589,6 @@ fn render_menu(title: &str, items: &[&str], selected: usize) -> Vec<String> {
 fn draw_menu(title: &str, items: &[&str], selected: usize) {
     let lines = render_menu(title, items, selected);
     let colour = crate::console::colors_enabled();
-    let last = lines.len().saturating_sub(1);
     let mut frame = String::with_capacity(1024);
     for (i, line) in lines.iter().enumerate() {
         if i > 0 {
@@ -599,13 +598,12 @@ fn draw_menu(title: &str, items: &[&str], selected: usize) {
             None
         } else if i == MENU_HEADER_ROWS + selected {
             // Reverse video turns the selected row into a full-width bar.
-            Some("\x1b[7m")
+            Some("\x1b[7;36m")
         } else if i == 1 {
-            Some("\x1b[1;97m")
-        } else if i == 0 || i == 2 || i == last.saturating_sub(2) || i == last {
-            Some("\x1b[36m")
+            Some("\x1b[1;36m")
         } else {
-            None
+            // The whole frame is blue so the menu reads as one panel.
+            Some("\x1b[36m")
         };
         match style {
             Some(style) => {

@@ -587,7 +587,7 @@ async fn run_shared_workers(
                 if index >= remaining {
                     break;
                 }
-                match register_with_retries(&worker_options).await {
+                match console::collected(register_with_retries(&worker_options)).await {
                     Ok(account) => {
                         ok_counter.fetch_add(1, Ordering::Relaxed);
                         p_print(&format!("Created {}", account.email), Color::Ok);
