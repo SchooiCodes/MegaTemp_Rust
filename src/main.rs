@@ -6,24 +6,10 @@
 
 #![allow(dead_code)]
 
-mod browser;
-mod cli;
-mod config;
-mod console;
-mod credentials;
-mod crypto;
-mod disk;
-mod hashcash;
-mod lock;
-mod mail;
-mod mega;
-mod menu;
-mod models;
-mod password;
-mod proxy;
-mod services;
-mod update;
-mod util;
+use megatem::{
+    browser, cli, config, console, credentials, disk, mail, menu, models, proxy, services, update,
+    util,
+};
 
 use anyhow::{bail, Result};
 use clap::Parser;

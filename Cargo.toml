@@ -6,6 +6,10 @@ description = "MegaTemp - bulk MEGA account creator and manager (Rust port)"
 license = "GPL-3.0-only"
 repository = "https://github.com/SchooiCodes/MegaTemp"
 
+[lib]
+name = "megatem"
+path = "src/lib.rs"
+
 [[bin]]
 name = "megatem"
 path = "src/main.rs"
@@ -38,6 +42,9 @@ num-traits = "0.2"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 crossterm = "0.28"
 sysinfo = "0.33"
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts"] }
+egui_extras = "0.37"
+tokio-util = { version = "0.7", features = ["rt"] }
 
 [dev-dependencies]
 tempfile = "3"
